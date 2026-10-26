@@ -105,3 +105,9 @@ For the bundled default `Project/` located beside Editor.exe, the post-build ins
 ## Current limitations
 
 This is a small first-version engine, not yet a production game engine. It has one active scene per game, one behavior per object, and supports numeric Inspector properties only. It does not yet provide a generalized physics engine, collision handling, tilemap painting, scripting debugger, game UI widgets, prefabs, animation, networking, or multiple scene loading. Code editing is a plain multiline text field, without syntax highlighting or autocomplete, and limited to 1 MiB per file. Custom scripts may use engine public headers via `#include "Behaviors.h"`; project source changes compile into that game's EXE only.
+
+## Troubleshooting: shellapi.h / EXTERN_C compilation errors
+
+If the in-editor **Build** displays Windows SDK `shellapi.h` errors such as `C2146` / `C2086` involving `EXTERN_C` when compiling `sdk/src/Runtime.cpp`, ensure `#include <windows.h>` appears **before** `#include <shellapi.h>` in `src/Runtime.cpp`. This header ordering is fixed in this archive.
+
+If you already built the editor from an older archive, the runtime template is copied to `build/bin/Release/sdk/src/Runtime.cpp` (alongside `Editor.exe`). Either change the order there and rebuild the game, or replace the original `src/Runtime.cpp` and rebuild the editor with `build_windows.bat` so the fixed template is copied. Running the `.bat` builds **the editor**, while the Build button inside SpriteForge builds **the current game**.
