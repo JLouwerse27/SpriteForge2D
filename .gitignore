@@ -1,0 +1,9 @@
+build/
+.vs/
+*.user
+*.suo
+*.pdb
+imgui.ini
+
+.spriteforge-build/
+**/.spriteforge-build/
