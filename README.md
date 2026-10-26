@@ -1,12 +1,12 @@
-# SpriteForge 2D — C++ Behaviors (Option A)
+# SpriteForge 2D — Independent game projects & built-in C++ editor
 
-A small **Windows 2D visual game editor** using **C++17, SFML 3.0.2, Dear ImGui/ImGui-SFML, and nlohmann/json**. This edition adds *compiled C++ behaviors* that you can assign to sprites in the Inspector. The same C++ game code is statically linked into `Editor.exe` for Play mode and into `GameRuntime.exe` for the exported game. No DLL scripting or interpreter is used.
+A Windows 2D scene editor with **C++17, SFML 3.0.2, Dear ImGui, and JSON scenes**. Each game has its own `scripts/` directory. The editor does **not** link your game scripts. `Build`, `Play`, and `Export EXE` compile your game separately into its own standalone Windows executable (Option A: statically linked C++ behavior classes; no game-logic DLL).
 
-> **Build verification:** The C++ behavior classes, registry, and lifecycle were compiled and exercised with Linux C++17 and minimal SFML interface stubs. The full editor and Windows `.exe` have **not** been compiled or tested in this environment because Windows and the required dependency downloads are unavailable. You reported the previous version builds on Windows; this is a source update that must be rebuilt there.
+## Build SpriteForge itself (once)
 
-## Build on Windows
+Requires Windows 10/11 x64, Visual Studio 2022 **Desktop development with C++**, CMake 3.28+, Git, and an internet connection for downloading dependencies on the first build.
 
-Requirements: Windows 10/11 x64, Visual Studio 2022 with **Desktop development with C++**, CMake 3.28+, Git, and network access on the first build. From a **Developer PowerShell for VS 2022**:
+Double-click `build_windows.bat`, or in a **Developer PowerShell for Visual Studio 2022**:
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -14,122 +14,94 @@ cmake --build build --config Release --target Editor --parallel 4
 .\build\bin\Release\Editor.exe
 ```
 
-Or run `build_windows.bat`.
+The build installs `build/bin/Release/Editor.exe`, a reusable `sdk/` folder beside it, and a default `Project/` folder. Keep `sdk/` beside the editor: its C++ engine sources and game-building CMake module are required to compile your games. The editor no longer has a `GameRuntime` build target; **individual game projects** now build their own runtime EXEs.
 
-**When upgrading from the earlier SpriteForge zip:** Put this updated source in a *new folder* or replace the source files in your existing folder. **Keep a backup of `build/bin/Release/Project`** (or your own saved projects) so you do not lose scene changes or sprites. CMake's sample installer does not intentionally overwrite an existing scene file.
+> **Verification:** We successfully compiled and ran the example behavior code and its generated registry with Linux C++17 and minimal SFML stubs. The entire Windows/ImGui/SFML editor and game executable have **not been compiled or tested** here. If Windows compilation reports an error, share the Build Output text so it can be corrected.
 
-## Attach compiled behaviors in the editor
+## Terminology
 
-1. Open SpriteForge and select a sprite in **Hierarchy** (or click it in the viewport).
-2. In **Inspector → C++ Behavior (Option A)**, choose `MoveWithKeys`, `Spin`, or `Patrol`.
-3. Adjust the exposed properties (`Speed`, `DegreesPerSecond`, `Distance`, etc.).
-4. Press **Play**. The editor creates a temporary scene copy and runs the compiled behaviors. **Stop** restores the editable scene.
-5. Save. The selected behavior's *name and parameter values* go into `scene.json`.
-6. Press **Export EXE** to copy the prebuilt game runtime, your scene, and your entire `assets/` directory into a new game folder.
+- **Game project:** your complete game, including scenes, sprites, C++ code, and assets.
+- **Scene:** a level, main menu, map, or another set of game objects in that project. This first engine version loads one scene per game run.
+- **Object:** a placed sprite with position, scale, rotation and an optional C++ behavior.
+- **Behavior:** compiled game logic attached to an object, e.g. `TurretAI` or `MoveWithKeys`.
+- **Asset:** a PNG, JPG, etc., imported into the project. **Prefab and multiple-scene project management are not implemented yet.**
 
-`MoveWithKeys` uses WASD / arrow keys and works in exported games. `Spin` rotates continuously. `Patrol` moves horizontally back and forth. Existing scenes with the old **Controllable** property still work; it is now marked as a legacy fallback.
+## How to use the C++ editor
 
-## Write your own C++ behavior
+1. Open `Editor.exe` and use **File → New project** to select a folder, or work in the included `Project/` demo.
+2. Import PNG/JPG sprites into the scene using the **Assets** tab.
+3. Switch to the **Code** tab under the scene. Click **Expand** to make the text editor taller.
+4. Click **New behavior**, enter e.g. `TurretAI`, and SpriteForge creates `scripts/TurretAI.cpp`. You can also create arbitrary `.cpp`, `.h`, `.hpp`, or `.inl` files using **New file**.
+5. Select files in the Code panel to edit them. **Save file** saves changes; switching files or building also saves edits.
+6. Right-click file names to **Rename** or **Delete** them (with confirmation). If other source files include a renamed header, update those `#include`s manually.
+7. To give a behavior Inspector-adjustable values, open its `.cpp` and use **+ Float property**. In its C++ class read a value with `ctx.setting("Range", 100.f)`. The properties are recorded in `behaviors.json`, shown in the Inspector, and built into game registration code.
+8. Select an object in the scene and choose the behavior under **Inspector → C++ Behavior**. Change its float properties as needed.
+9. Click **Build** to compile the game, or **Play / Compile** to compile and run it in a **separate game window**. Press Escape in the game to quit, or press Stop Game in the editor.
+10. **Export EXE** compiles your current game code, then copies the compiled `GameRuntime.exe` under your chosen game name alongside `scene.json` and the whole `assets/` tree. Distribute the exported **folder**, not just the EXE.
 
-Edit `game/GameBehaviors.cpp` (or add another `.cpp` file in `game/`). Classes inherit from `forge::Behavior` and implement `onUpdate`:
+**The editor itself is not rebuilt when you change a game script.** Only your game C++ and its dependencies are compiled. First-time builds can take longer because CMake downloads and compiles dependencies in each project's build folder. Subsequent builds are incremental. The editor does not include C++ autocomplete, breakpoints, syntax highlighting, or live reloading.
+
+### How games and projects are arranged
+
+```text
+SpriteForge2D/                         editor source and build scripts
+  src/Editor.cpp                      editor implementation
+  src/ProjectWorkspace.cpp            project/scripts and behavior metadata
+  src/BuildRunner.cpp                 external CMake game builds
+  src/EngineCore.*                     shared engine code
+  src/Behaviors.*                      C++ behavior API and runtime
+  src/Runtime.cpp                      exported runtime entry point
+  cmake/SpriteForgeGame.cmake          per-game build configuration
+  sample_project/                      installed as Project/ beside Editor.exe
+
+MyFactoryGame/                         INDEPENDENT GAME PROJECT
+  CMakeLists.txt                       delegates build to SpriteForge SDK
+  scene.json                           current scene
+  behaviors.json                       registered class names and properties
+  assets/
+    player.png
+  scripts/
+    Player.cpp                          your editable C++ code
+    TurretAI.cpp                        your editable C++ code
+    .generated/GameBehaviors.cpp        automatically generated; do NOT edit
+  .spriteforge-build/                 created on first Build, not source-controlled
+    build.log                           shown in Build Output
+    bin/Release/GameRuntime.exe         standalone compiled game logic
+```
+
+### A minimal behavior
+
+The **New behavior** action generates a class with a matching registration function. You only need to implement `onUpdate`, which is called each frame. You can optionally implement `onCreate` and `onDestroy`.
 
 ```cpp
-#include "Behaviors.h"
-
-class TurretSpin final : public forge::Behavior {
+class TurretAI final : public forge::Behavior {
 public:
     void onUpdate(forge::BehaviorContext& ctx) override {
-        ctx.object.rotation += ctx.setting("Speed", 45.f) * ctx.deltaTime;
+        ctx.object.rotation += ctx.setting("Speed", 30.f) * ctx.deltaTime;
     }
 };
 ```
 
-In **`registerGameBehaviors()`** in `game/GameBehaviors.cpp`, add:
+`ctx` provides the object's transform, scene lookups, keyboard input, delta time, and `spawnSprite`/`destroy` for deferred object mutations. The generated registration function at the bottom of the file should stay intact. Float settings are defined in the Code tab and stored in `behaviors.json`. Edits to object-specific settings remain in `scene.json`.
 
-```cpp
-registry.add<TurretSpin>("TurretSpin", "A rotating turret",
-    {{"Speed", 45.f, -360.f, 360.f, 1.f}});
-```
+### Source and export behavior
 
-If your class lives in a separate `.cpp`, declare it in a header and include that header in `GameBehaviors.cpp` before registering it. The registration must be present for the behavior to appear in the Inspector. Additional `game/*.cpp` files are automatically included by CMake's source discovery on the next build.
+`Editor.exe` is a stable scene/code editing tool that reads the game's `behaviors.json`. It **does not execute user-defined C++ behavior classes inside the editor process**. To test them, it starts a CMake build and then launches the project's `GameRuntime.exe` with `--scene <absolute-path>`.
 
-**Important rebuild step:** Close the editor, run `build_windows.bat` or rebuild the Editor target in Visual Studio, and reopen the editor. You must rebuild whenever you change C++ code. You **do not** have to rebuild just to move sprites, change their settings, or save a scene.
+Each `GameRuntime.exe` embeds the current project's C++ behavior classes. It loads a JSON scene and assets when it starts. An exported EXE defaults to `scene.json` beside itself. You cannot run an exported EXE without its accompanying assets if the scene uses sprites.
 
-### Behavior API
+When you use **Build Output**, you can read the compiler's stdout/stderr from `.spriteforge-build/build.log`. If an active game window is running, close it before compiling again; Windows prevents replacing a running EXE.
 
-```cpp
-void onCreate(forge::BehaviorContext& ctx);  // once at game start
-void onUpdate(forge::BehaviorContext& ctx);  // each frame
-void onDestroy(forge::BehaviorContext& ctx); // when stopped or destroyed
-```
+## Migration from earlier SpriteForge releases
 
-`onUpdate` is required; the other two callbacks are optional. `ctx` provides:
+1. **Back up your old `Project/` folder** (especially its `scene.json`, `assets/`, and any game code).
+2. Extract this ZIP to **a new folder** and run its `build_windows.bat`. Don't copy the new sources over an older build without refreshing CMake.
+3. The included default project has matching `.cpp` scripts for `MoveWithKeys`, `Spin`, and `Patrol` (and a `behaviors.json`).
+4. For previous projects that only had `scene.json` and `assets/`, open them using **File → Open project**. The editor creates a new `scripts/` directory and behavior manifest. Move/adapt any prior `game/GameBehaviors.cpp` classes into the new project, using **New behavior** to generate registration boilerplate for each class.
+5. When you change *game* code, use the editor's **Build** button; don't rerun `build_windows.bat` unless you've changed SpriteForge engine/editor sources.
 
-- `ctx.object`: the current `forge::Object` (position, rotation, scale, etc.).
-- `ctx.scene`: the current scene and all objects (`ctx.scene.find(id)`).
-- `ctx.input`: booleans `left`, `right`, `up`, `down`, `action` (space).
-- `ctx.deltaTime`: elapsed seconds for this frame, clamped to 50 ms maximum.
-- `ctx.setting("Name", fallback)`: float configured from the Inspector.
-- `ctx.spawnSprite(name, "assets/example.png", position, optionalBehaviorName, optionalSettingMap)`: schedules a new sprite; returns its ID.
-- `ctx.destroy(id)`: schedules an object for removal.
+For the bundled default `Project/` located beside Editor.exe, the post-build installer also tries to migrate the built-in example behaviors without overwriting existing files.
 
-**Use `ctx.spawnSprite()` and `ctx.destroy()`** rather than modifying `ctx.scene.objects` directly during an update, because changing a vector while other scripts are running can invalidate object references. New objects start their scripts on the next frame. Your behavior can keep instance-specific C++ state in private members (e.g. timers), reset by Stop/Play; this state is not serialized.
+## Current limitations
 
-The current system supports **one custom C++ behavior per object**. It is not yet a complete component system, physics engine, or script hot-reloader.
-
-## How Option A exports work
-
-CMake builds these targets:
-
-```
-EngineCore (static library)
-  + GameCode (static library, game/*.cpp)
-    + Editor.exe       [game code is compiled in]
-    + GameRuntime.exe  [game code is compiled in]
-```
-
-Each exported game directory contains:
-
-```
-MyGame/
-  MyGame.exe        # copy of compiled GameRuntime.exe
-  scene.json        # object positions, behavior names, float values
-  assets/           # all imported assets, including those spawned from C++
-```
-
-**Export EXE does not run the C++ compiler itself.** If you modify `game/*.cpp`, rebuild before exporting. The exported EXE contains your newly compiled behavior classes; the scene tells it which classes to instantiate. Distribute the whole directory, not just the EXE.
-
-The initial engine has no collision detection, physics, runtime GUI, audio, tilemap painting, multiple scenes, animation, visual scripting, or one-file asset packing yet. These are separate future features.
-
-## Directory layout
-
-```
-SpriteForge2D/
-  CMakeLists.txt
-  build_windows.bat
-  README.md
-  game/
-    GameBehaviors.h        # registerGameBehaviors declaration
-    GameBehaviors.cpp      # example game scripts + registration
-  src/
-    Behaviors.h            # public C++ behavior API
-    Behaviors.cpp          # behavior lifecycle and registry
-    EngineCore.h/.cpp      # objects, scene, rendering, scene JSON
-    Editor.cpp             # ImGui visual editor
-    Runtime.cpp            # exported game runtime loop
-  sample_project/
-    scene.json
-    assets/
-  scripts/
-    install_sample.cmake
-```
-
-## Troubleshooting
-
-- **New behavior missing in Inspector:** Did you register it in `registerGameBehaviors()` and rebuild/restart Editor?
-- **Missing C++ behavior on Play/Export:** That scene references a class not registered in this build. Re-register/rebuild it or change the Inspector selection.
-- **Export runs old behavior:** Close Editor, rebuild `Editor` **and** `GameRuntime`, then export again.
-- **Behavior class won't compile:** Confirm it inherits `forge::Behavior`, implements `void onUpdate(forge::BehaviorContext&)`, and its definition is visible at registration.
-- **Image missing in exported game:** Put it under the project `assets/` folder; spawned sprites also use relative paths beginning with `assets/`.
-- **Build tools not found:** Install CMake, Git, and Visual Studio C++ desktop tools.
-- **Unsigned executable warning:** Windows SmartScreen may warn on unsigned binaries; code signing is a separate step.
+This is a small first-version engine, not yet a production game engine. It has one active scene per game, one behavior per object, and supports numeric Inspector properties only. It does not yet provide a generalized physics engine, collision handling, tilemap painting, scripting debugger, game UI widgets, prefabs, animation, networking, or multiple scene loading. Code editing is a plain multiline text field, without syntax highlighting or autocomplete, and limited to 1 MiB per file. Custom scripts may use engine public headers via `#include "Behaviors.h"`; project source changes compile into that game's EXE only.

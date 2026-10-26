@@ -42,6 +42,11 @@ int BehaviorContext::spawnSprite(std::string name, std::string texture, sf::Vect
 
 void BehaviorContext::destroy(int id) { removals_.push_back(id); }
 
+void BehaviorRegistry::addMetadata(std::string name, std::string description, std::vector<FloatSetting> settings) {
+    if (find(name)) throw std::runtime_error("Duplicate behavior: " + name);
+    definitions_.push_back({std::move(name), std::move(description), std::move(settings), {}});
+}
+
 const BehaviorDefinition* BehaviorRegistry::find(const std::string& name) const {
     const auto it = std::find_if(definitions_.begin(), definitions_.end(),
         [&](const BehaviorDefinition& def) { return def.name == name; });

@@ -74,6 +74,7 @@ public:
         definitions_.push_back({std::move(name), std::move(description),
                                 std::move(settings), [] { return std::make_unique<T>(); }});
     }
+    void addMetadata(std::string name, std::string description, std::vector<FloatSetting> settings = {});
     const BehaviorDefinition* find(const std::string& name) const;
     const std::vector<BehaviorDefinition>& definitions() const { return definitions_; }
 
@@ -82,7 +83,7 @@ private:
 };
 
 // Instantiates one C++ Behavior per scene Object with a nonempty behavior name.
-// Both Editor and GameRuntime link the *same compiled GameCode static library*.
+// The exported GameRuntime links game code; Editor reads behavior metadata only.
 class BehaviorSystem {
 public:
     explicit BehaviorSystem(const BehaviorRegistry& registry) : registry_(registry) {}

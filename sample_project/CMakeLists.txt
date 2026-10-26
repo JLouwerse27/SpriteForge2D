@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.28)
+project(SpriteForgeGame LANGUAGES CXX)
+if(NOT DEFINED SPRITEFORGE_SDK OR NOT EXISTS "${SPRITEFORGE_SDK}/cmake/SpriteForgeGame.cmake")
+    message(FATAL_ERROR "Build through SpriteForge or pass -DSPRITEFORGE_SDK=<path-to-editor-sdk>")
+endif()
+include("${SPRITEFORGE_SDK}/cmake/SpriteForgeGame.cmake")
