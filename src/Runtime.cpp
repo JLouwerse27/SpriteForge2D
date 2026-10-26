@@ -1,5 +1,6 @@
 #include "EngineCore.h"
 #include "Behaviors.h"
+#include "SteamIntegration.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -23,6 +24,23 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             MessageBoxA(nullptr, error.c_str(), "Unable to load game", MB_OK | MB_ICONERROR);
             return 1;
         }
+        // SteamAPI_Init must precede SFML's OpenGL context creation for overlay hook.
+        struct SteamLifetime {
+            SteamLifetime() { forge::steam::initialize(); }
+            ~SteamLifetime() { forge::steam::shutdown(); }
+        } steamLifetime;
+        // Invited players may be launched by Steam with +connect_lobby <id>.
+        argc = 0;
+        argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv) {
+            for (int i = 1; i + 1 < argc; ++i) {
+                if (std::wstring(argv[i]) == L"+connect_lobby") {
+                    try { forge::steam::joinLobby(std::stoull(argv[i + 1])); }
+                    catch (...) {} // Ignore malformed/inapplicable invite IDs.
+                }
+            }
+            LocalFree(argv);
+        }
         forge::BehaviorRegistry registry;
         extern void registerGameBehaviors(forge::BehaviorRegistry&);
         registerGameBehaviors(registry); // This PROJECT'S C++ code is statically linked here.
@@ -39,6 +57,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                     if (key->code == sf::Keyboard::Key::Escape) window.close();
                 }
             }
+            forge::steam::pump();
             float dt = std::min(clock.restart().asSeconds(), 0.05f);
             const forge::InputState input = window.hasFocus()
                 ? forge::readKeyboardInput() : forge::InputState{};

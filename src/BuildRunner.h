@@ -3,6 +3,7 @@
 #include <atomic>
 #include <thread>
 #include <string>
+#include "SteamProject.h"
 
 namespace forge {
 namespace fs = std::filesystem;
@@ -11,7 +12,7 @@ namespace fs = std::filesystem;
 class BuildRunner {
 public:
     ~BuildRunner();
-    bool start(const fs::path& project, const fs::path& sdk);
+    bool start(const fs::path& project, const fs::path& sdk, const SteamProject& steam);
     bool busy() const { return busy_.load(); }
     bool takeResult(bool& succeeded);
     const fs::path& logPath() const { return log_; }

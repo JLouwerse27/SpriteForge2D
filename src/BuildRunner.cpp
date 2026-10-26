@@ -55,7 +55,7 @@ BuildRunner::~BuildRunner() { if (thread_.joinable()) thread_.join(); }
 fs::path BuildRunner::runtimePath(const fs::path& project) {
     return project / ".spriteforge-build" / "bin" / "Release" / "GameRuntime.exe";
 }
-bool BuildRunner::start(const fs::path& project, const fs::path& sdk) {
+bool BuildRunner::start(const fs::path& project, const fs::path& sdk, const SteamProject& steam) {
     if (busy_.load()) return false;
     if (thread_.joinable()) thread_.join();
     ready_ = false;
@@ -63,7 +63,7 @@ bool BuildRunner::start(const fs::path& project, const fs::path& sdk) {
     busy_ = true;
     log_ = project / ".spriteforge-build" / "build.log";
     try {
-        thread_ = std::thread([this, project, sdk] {
+        thread_ = std::thread([this, project, sdk, steam] {
             try {
                 fs::create_directories(log_.parent_path());
                 SECURITY_ATTRIBUTES sa{};
@@ -74,8 +74,16 @@ bool BuildRunner::start(const fs::path& project, const fs::path& sdk) {
                 if (log.value == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open build log");
                 appendLog(log.value, "Configuring the game project...\r\n");
                 const fs::path build = project / ".spriteforge-build";
-                const std::wstring configure = L"cmake -S " + quoted(project) + L" -B " + quoted(build) +
+                std::wstring configure = L"cmake -S " + quoted(project) + L" -B " + quoted(build) +
                     L" -G \"Visual Studio 17 2022\" -A x64 -DSPRITEFORGE_SDK:PATH=" + quoted(sdk);
+                configure += L" -DSPRITEFORGE_STEAM_ENABLED:BOOL=" +
+                    std::wstring(steam.enabled ? L"ON" : L"OFF");
+                if (steam.enabled) {
+                    if (steam.appId == 0) throw std::runtime_error("Steam enabled but App ID is zero");
+                    if (!fs::exists(steam.sdkPath / "public" / "steam" / "steam_api.h"))
+                        throw std::runtime_error("Steam enabled but SDK path is missing public/steam/steam_api.h");
+                    configure += L" -DSPRITEFORGE_STEAM_SDK:PATH=" + quoted(fs::absolute(steam.sdkPath));
+                }
                 int result = runCommand(configure, project, log.value);
                 if (result == 0) {
                     appendLog(log.value, "\r\nCompiling game code...\r\n");
@@ -87,7 +95,23 @@ bool BuildRunner::start(const fs::path& project, const fs::path& sdk) {
                 else if (!fs::is_regular_file(runtimePath(project))) {
                     appendLog(log.value, "\r\nGameRuntime.exe not found after build.\r\n");
                     result = 1;
-                } else appendLog(log.value, "\r\nBuild succeeded.\r\n");
+                } else {
+                    const fs::path exeDir = runtimePath(project).parent_path();
+                    // For local development only. NEVER copy this file to Steam release exports.
+                    const fs::path devAppID = exeDir / "steam_appid.txt";
+                    if (steam.enabled) {
+                        Handle appid(CreateFileW(devAppID.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                            nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+                        if (appid.value == INVALID_HANDLE_VALUE)
+                            throw std::runtime_error("Could not create development steam_appid.txt");
+                        appendLog(appid.value, std::to_string(steam.appId) + "\n");
+                    } else {
+                        std::error_code ec;
+                        fs::remove(devAppID, ec);
+                        fs::remove(exeDir / "steam_api64.dll", ec);
+                    }
+                    appendLog(log.value, "\r\nBuild succeeded.\r\n");
+                }
                 success_ = result == 0;
             } catch (const std::exception& e) {
                 success_ = false;

@@ -111,3 +111,81 @@ This is a small first-version engine, not yet a production game engine. It has o
 If the in-editor **Build** displays Windows SDK `shellapi.h` errors such as `C2146` / `C2086` involving `EXTERN_C` when compiling `sdk/src/Runtime.cpp`, ensure `#include <windows.h>` appears **before** `#include <shellapi.h>` in `src/Runtime.cpp`. This header ordering is fixed in this archive.
 
 If you already built the editor from an older archive, the runtime template is copied to `build/bin/Release/sdk/src/Runtime.cpp` (alongside `Editor.exe`). Either change the order there and rebuild the game, or replace the original `src/Runtime.cpp` and rebuild the editor with `build_windows.bat` so the fixed template is copied. Running the `.bat` builds **the editor**, while the Build button inside SpriteForge builds **the current game**.
+
+---
+
+# Steamworks integration (optional, Windows x64)
+
+**This edition includes optional Steamworks game integration**: Steam achievements, overlay, lobbies/friend invitations and a P2P message transport foundation. Steamworks is not bundled: the SDK is provided directly by Valve to Steamworks partners and must be obtained separately. Steam features are **not required** for an ordinary SpriteForge project.
+
+## 1. Download the official Steamworks SDK
+
+1. Create or access your Steamworks partner account and your game's App ID: <https://partner.steamgames.com/>.
+2. Download the official SDK: <https://partner.steamgames.com/doc/sdk> (SDK download may require partner access).
+3. Extract it somewhere on Windows. Find the directory containing **`public/steam/steam_api.h`** and **`redistributable_bin/win64/steam_api64.lib`**, e.g. `C:\SDKs\steamworks_sdk_XXX\sdk`.
+4. Rebuild the SpriteForge **editor one time** from this ZIP using `build_windows.bat`, preferably in a **new directory** first; back up your previous `Project/`, `scene.json`, `scripts/`, and `assets/`. Changing game behaviors still does not rebuild the editor.
+
+**Important:** The official SDK headers, import `.lib`, and Steam DLL are **not in this ZIP**. Without the SDK and an appropriate Steam App ID, this cannot be tested as a functioning Steam game. Non-Steam builds still work.
+
+## 2. Configure an individual game in the editor
+
+1. Open your game project in SpriteForge.
+2. Open the **Steam** tab below the scene.
+3. Check **Enable Steamworks**, enter *your actual Steam App ID*, and browse to the extracted SDK root (`sdk` folder containing `public/` and `redistributable_bin/`).
+4. Click **Save Steam settings**. Settings and achievement metadata live in the game's `steam.json` file; SDK path is a local development setting and not bundled into the finished game.
+5. Add achievements using **API Name**, **Display Name**, and **Description**. Example ID: `ACH_FIRST_FACTORY`.
+6. **Separately create and publish** those exact API names, names, icons, and descriptions in Steamworks Partner > Achievements. The editor cannot change your Steamworks Partner account. Local achievement entries are just a convenient checklist and a source of IDs for your C++ code.
+7. Press **Play / Compile**. CMake now builds only this game's `GameRuntime.exe` with the Steamworks SDK. The Steam DLL is copied beside the runtime; the editor writes a **development-only** `steam_appid.txt` there and launches with that directory as the working directory.
+
+SteamAPI is initialized by `Runtime.cpp` **before** SFML constructs the game window/OpenGL context, allowing Steam to inject its overlay. The game runs `SteamAPI_RunCallbacks()` once per frame and shuts Steam down when it closes. Shift+Tab works only when Steam's overlay is enabled and initialization succeeds; launch through Steam or use a licensed, configured developer App ID. You can still play an enabled build offline if initialization fails, but Steam functions return `false`/empty results.
+
+## 3. Unlock achievements from C++
+
+In a C++ behavior, include the public wrapper header:
+
+```cpp
+#include "SteamIntegration.h"
+// After completing a gameplay task:
+forge::steam::unlockAchievement("ACH_FIRST_FACTORY");
+```
+
+For example, trigger it after your factory places its first working conveyor belt, when a tank is repaired for the first time, or on the first successful tower-defense wave. The local API name must **exactly** match a published achievement in Steamworks Partner. The wrapper calls `SteamUserStats()->SetAchievement()` and `StoreStats()`; achievements requested before Steam stats finish loading are queued. Other useful methods: `forge::steam::available()`, `hasAchievement()`, `setIntStat()` and `openOverlay("achievements")`.
+
+## 4. Multiplayer foundation — NOT automatic multiplayer
+
+Use `forge::steam::createLobby(maxPlayers)` to start a friend-only lobby and `forge::steam::showInviteDialog()` to show Steam's invite dialog. Steam automatically supplies lobby-join callbacks. The runtime handles `+connect_lobby <SteamID>` command-line arguments from Steam. Useful APIs:
+
+| C++ API | Purpose |
+|---|---|
+| `steam::playerId()` and `playerName()` | Local Steam identity |
+| `steam::createLobby(4)` | Request a friends-only lobby |
+| `steam::joinLobby(lobbyID)` | Join an existing Steam lobby |
+| `steam::lobbyId()` / `lobbyMembers()` / `leaveLobby()` | Inspect and leave lobby |
+| `steam::showInviteDialog()` | Invite Steam friends through overlay |
+| `steam::send(peerID, bytes, reliable)` | Send a P2P message through Steam Networking Messages |
+| `steam::receive()` | Drain received messages (SteamID + payload), then validate and apply yourself |
+
+See `examples/SteamExamples.md` for C++ snippets. Transport sessions accept messages only from members of your current lobby and messages are size-limited. You still need to create multiplayer gameplay rules, ownership/authority, synchronization, interpolation, packet encoding/validation, anti-cheat defenses, and disconnect recovery. Steam **does not provide free hosted dedicated game servers**. P2P via Valve's relay network allows a player to act as host without relying on public port forwarding in many cases.
+
+## 5. Export and publish on Steam
+
+1. In **Steam** tab, enable Steam, enter your App ID and SDK location, then Build / Test.
+2. **Export EXE** creates `YourGame.exe`, `scene.json`, the complete `assets/` tree, and **`steam_api64.dll`**. It intentionally does **not** include `steam_appid.txt` (development-only). Scripts are linked into the game executable: your users do not need your source files or the SDK.
+3. Create your product and configure its executable/launch options, supported OS, artwork, store listing, builds and depots in the Steamworks Partner portal.
+4. Upload the exported folder with **SteamPipe / ContentBuilder**, which is shipped as part of the official Steamworks SDK. The editor does **not** directly upload or publish games to Steam.
+5. Test a build installed through Steam with a licensed test account, verify Shift+Tab, unlocked achievements, packaging and (if used) invitations/connectivity; complete Steam's review/release steps.
+
+Steam integration is optional; unchecking it and building again produces an ordinary non-Steam game. Your original scene and behaviors remain usable.
+
+## Common mistakes
+
+- **"Steam enabled but SDK path missing"**: select the inner SDK directory containing `public/` and `redistributable_bin/`, not the enclosing download folder.
+- **`SteamAPI_Init` fails**: run Steam as the same Windows account, use a valid licensed App ID, and check the development-only `steam_appid.txt` beside the built EXE.
+- **Overlay missing**: enable the Steam overlay in Steam, ensure the game actually initialized Steam, and test launching it from Steam. A native SFML/OpenGL game should be supported.
+- **Achievements not unlocking**: Steamworks API names are case-sensitive; achievements must be configured and published on the Steamworks Partner dashboard.
+- **Invitations work but other players don't move**: matchmaking and transport are included, but state replication and game-specific multiplayer logic still need to be written.
+- **Error after switching Steam on/off**: close a running game before rebuilding; inspect SpriteForge **Build Output** and confirm the requested SDK and App ID.
+
+## Testing status
+
+The non-Steam SteamIntegration stub compiles with Linux g++ C++17. The Steam-enabled wrapper passes a C++17 syntax check against a **locally authored API-shaped test header, not Valve's real Steamworks SDK**. Windows + real Steamworks linking, overlay display, achievement unlocks and multiplayer connectivity have NOT been tested here. Validate these on your PC with the official SDK and your own Steamworks App ID.

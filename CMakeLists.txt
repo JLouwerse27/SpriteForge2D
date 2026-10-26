@@ -35,7 +35,7 @@ target_compile_features(EngineCore PUBLIC cxx_std_17)
 target_include_directories(EngineCore PUBLIC src)
 target_link_libraries(EngineCore PUBLIC SFML::Graphics nlohmann_json::nlohmann_json)
 
-add_executable(Editor WIN32 src/Editor.cpp src/ProjectWorkspace.cpp src/ProjectWorkspace.h src/BuildRunner.cpp src/BuildRunner.h)
+add_executable(Editor WIN32 src/Editor.cpp src/ProjectWorkspace.cpp src/ProjectWorkspace.h src/BuildRunner.cpp src/BuildRunner.h src/SteamProject.cpp src/SteamProject.h)
 target_link_libraries(Editor PRIVATE EngineCore ImGui-SFML::ImGui-SFML comdlg32 shell32 ole32)
 
 add_custom_command(TARGET Editor POST_BUILD
@@ -50,6 +50,8 @@ add_custom_command(TARGET Editor POST_BUILD
             ${CMAKE_CURRENT_SOURCE_DIR}/src/EngineCore.h
             ${CMAKE_CURRENT_SOURCE_DIR}/src/Behaviors.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/Behaviors.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/SteamIntegration.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/SteamIntegration.h
             $<TARGET_FILE_DIR:Editor>/sdk/src
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SpriteForgeGame.cmake

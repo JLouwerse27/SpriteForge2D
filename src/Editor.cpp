@@ -2,6 +2,7 @@
 #include "Behaviors.h"
 #include "ProjectWorkspace.h"
 #include "BuildRunner.h"
+#include "SteamProject.h"
 #include <imgui.h>
 #include <imgui-SFML.h>
 #include <windows.h>
@@ -133,6 +134,12 @@ class EditorApp {
     TextureCache textures_;
     BehaviorRegistry registry_;
     ProjectWorkspace workspace_;
+    SteamProject steam_;
+    char steamSdkPath_[1024] = {};
+    int steamAppIDInput_ = 0;
+    char newAchievementID_[128] = {};
+    char newAchievementName_[256] = {};
+    char newAchievementDescription_[512] = {};
     BuildRunner builder_;
     Scene scene_;
     fs::path projectDir_;
@@ -172,6 +179,7 @@ public:
           currentSceneFile_(projectDir_ / "scene.json") {
         workspace_.setRoot(projectDir_);
         workspace_.initialize();
+        loadSteamSettings();
         reloadRegistry();
         window_.setVerticalSyncEnabled(true);
         if (!fs::exists(currentSceneFile_)) {
@@ -241,6 +249,81 @@ public:
     }
 
 private:
+    void loadSteamSettings() {
+        steam_ = SteamProject::load(projectDir_);
+        std::memset(steamSdkPath_, 0, sizeof(steamSdkPath_));
+        const std::string sdk = steam_.sdkPath.string();
+        std::strncpy(steamSdkPath_, sdk.c_str(), sizeof(steamSdkPath_) - 1);
+        steamAppIDInput_ = static_cast<int>(steam_.appId);
+    }
+
+    bool saveSteamSettings() {
+        try {
+            if (steamAppIDInput_ < 0) throw std::runtime_error("Steam App ID must be positive");
+            steam_.appId = static_cast<std::uint32_t>(steamAppIDInput_);
+            steam_.sdkPath = steamSdkPath_;
+            steam_.save(projectDir_);
+            return true;
+        } catch (const std::exception& e) { notify(std::string("Steam settings error: ") + e.what()); return false; }
+    }
+
+    void steamPanel() {
+        ImGui::TextUnformatted("Steamworks (optional per game project)");
+        ImGui::Separator();
+        ImGui::Checkbox("Enable Steamworks for this game", &steam_.enabled);
+        ImGui::InputInt("Steam App ID", &steamAppIDInput_);
+        ImGui::InputText("Steamworks SDK folder", steamSdkPath_, sizeof(steamSdkPath_));
+        if (ImGui::Button("Browse SDK...")) {
+            const fs::path folder = chooseFolder(window_.getNativeHandle(), L"Choose the Steamworks SDK root folder (contains public and redistributable_bin)");
+            if (!folder.empty()) {
+                const std::string dir = folder.string();
+                std::strncpy(steamSdkPath_, dir.c_str(), sizeof(steamSdkPath_)-1);
+                steamSdkPath_[sizeof(steamSdkPath_)-1] = 0;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save Steam settings")) {
+            if (saveSteamSettings()) notify("Saved project Steam settings. Build to apply.");
+        }
+        ImGui::TextWrapped("Download your official SDK at partner.steamgames.com/doc/sdk. It is NOT included."
+                           " Steam overlay and achievements require Steam to be running and a valid App ID.");
+        ImGui::TextWrapped("The IDs below are LOCAL definitions. Create and publish the same API names in Steamworks Partner > Achievements.");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Achievement definitions");
+        int removeIndex = -1;
+        for (int i = 0; i < static_cast<int>(steam_.achievements.size()); ++i) {
+            const auto& a = steam_.achievements[static_cast<size_t>(i)];
+            ImGui::PushID(i);
+            ImGui::Text("%s  |  %s", a.apiName.c_str(), a.displayName.c_str());
+            if (!a.description.empty()) ImGui::TextWrapped("%s", a.description.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) removeIndex = i;
+            ImGui::PopID();
+        }
+        if (removeIndex >= 0) {
+            steam_.achievements.erase(steam_.achievements.begin()+removeIndex);
+            saveSteamSettings();
+        }
+        ImGui::Separator();
+        ImGui::InputTextWithHint("##steamachid", "ACH_FIRST_WIN (API name)", newAchievementID_, sizeof(newAchievementID_));
+        ImGui::InputTextWithHint("##steamachname", "First Win (display name)", newAchievementName_, sizeof(newAchievementName_));
+        ImGui::InputTextWithHint("##steamachdesc", "Description", newAchievementDescription_, sizeof(newAchievementDescription_));
+        if (ImGui::Button("Add achievement")) {
+            steam_.achievements.push_back({newAchievementID_, newAchievementName_, newAchievementDescription_});
+            if (saveSteamSettings()) {
+                newAchievementID_[0] = newAchievementName_[0] = newAchievementDescription_[0] = '\0';
+                notify("Achievement added locally; also create it in Steamworks Partner.");
+            } else steam_.achievements.pop_back();
+        }
+        ImGui::Separator();
+        ImGui::TextWrapped("From game behavior C++: #include \"SteamIntegration.h\" then"
+                           " forge::steam::unlockAchievement(\"ACH_FIRST_WIN\");");
+        ImGui::TextWrapped("Multiplayer foundation: createLobby(), showInviteDialog(), send(), receive()."
+                           " You must implement object synchronization and gameplay authority in C++.");
+        ImGui::TextWrapped("Steam-ready Export copies steam_api64.dll but never packages steam_appid.txt."
+                           " Upload/release via Steamworks SteamPipe separately.");
+    }
+
     void reloadRegistry() {
         registry_ = BehaviorRegistry{};
         workspace_.reload();
@@ -295,6 +378,7 @@ private:
             workspace_ = std::move(newWorkspace);
             projectDir_ = dest;
             currentSceneFile_ = dest / "scene.json";
+            loadSteamSettings();
             reloadRegistry();
             selectedCodeFile_.clear(); sourceDirty_ = false;
             selectedId_ = inspectorId_ = -1;
@@ -318,6 +402,7 @@ private:
             workspace_ = std::move(newWorkspace);
             projectDir_ = dest;
             currentSceneFile_ = dest / "scene.json";
+            loadSteamSettings();
             reloadRegistry();
             selectedCodeFile_.clear(); sourceDirty_ = false;
             selectedId_ = inspectorId_ = -1;
@@ -347,7 +432,8 @@ private:
         std::wstring writable = command;
         STARTUPINFOW start{}; start.cb = sizeof(start);
         PROCESS_INFORMATION proc{};
-        const std::wstring cwd = projectDir_.wstring();
+        // Steam development App ID is beside GameRuntime.exe, not the project root.
+        const std::wstring cwd = exe.parent_path().wstring();
         if (!CreateProcessW(exe.c_str(), writable.data(), nullptr, nullptr, FALSE, 0,
                             nullptr, cwd.c_str(), &start, &proc)) throw std::runtime_error("Could not launch game executable");
         gameProcess_ = proc.hProcess;
@@ -360,7 +446,7 @@ private:
         if (gameProcess_ && WaitForSingleObject(gameProcess_, 0) != WAIT_OBJECT_0) {
             notify("Close the running game before rebuilding (Windows locks running EXE files)."); return;
         }
-        if (!saveCode()) return;
+        if (!saveCode() || !saveSteamSettings()) return;
         if (currentSceneFile_.empty()) currentSceneFile_ = projectDir_ / "scene.json";
         std::string err;
         if (!saveScene(scene_, currentSceneFile_, err)) { notify("Save failed: " + err); return; }
@@ -371,7 +457,7 @@ private:
             if (!fs::is_regular_file(sdk / "cmake" / "SpriteForgeGame.cmake"))
                 throw std::runtime_error("Missing SDK files. Rebuild/reinstall the SpriteForge editor first.");
             afterBuild_ = action;
-            builder_.start(projectDir_, sdk);
+            builder_.start(projectDir_, sdk, steam_);
             notify("Building game C++... Open the Build Output tab for errors.");
         } catch (const std::exception& e) { afterBuild_ = AfterBuild::None; notify(std::string("Build setup error: ") + e.what()); }
     }
@@ -386,6 +472,16 @@ private:
         std::string err;
         if (!saveScene(scene_, out / "scene.json", err)) throw std::runtime_error(err);
         fs::copy_file(runtime, out / (name + ".exe"), fs::copy_options::overwrite_existing);
+        const fs::path steamDll = runtime.parent_path() / "steam_api64.dll";
+        if (steam_.enabled) {
+            if (!fs::is_regular_file(steamDll)) throw std::runtime_error("Steam DLL missing after build");
+            fs::copy_file(steamDll, out / "steam_api64.dll", fs::copy_options::overwrite_existing);
+        } else {
+            std::error_code ec;
+            fs::remove(out / "steam_api64.dll", ec); // remove stale exported dependency
+        }
+        // A development steam_appid.txt MUST NOT be included in a Steam shipping build.
+        { std::error_code ec; fs::remove(out / "steam_appid.txt", ec); }
         notify("Exported " + (out / (name + ".exe")).string());
     }
 
@@ -584,6 +680,7 @@ private:
         if (ImGui::BeginTabBar("WorkspaceTabs")) {
             if (ImGui::BeginTabItem("Assets")) { assetBrowser(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Code")) { codePanel(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Steam")) { steamPanel(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Build Output")) { buildOutputPanel(); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
