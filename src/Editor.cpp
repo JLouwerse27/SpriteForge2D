@@ -700,7 +700,7 @@ private:
         for(int i=32;i<=126;++i) {
             ImGui::PushID(i);
             const std::string str(1,static_cast<char>(i));
-            if(ImGui::SmallButton(str.c_str(),ImVec2(22.f,22.f))) selectedGlyph_=i;
+            if(ImGui::Button(str.c_str(),ImVec2(22.f,22.f))) selectedGlyph_=i;
             if((i-31)%9!=0 && i!=126)ImGui::SameLine(0.f,2.f);
             ImGui::PopID();
         }
@@ -1455,7 +1455,12 @@ private:
         const unsigned rw = static_cast<unsigned>(std::max(1.f, available.x));
         const unsigned rh = static_cast<unsigned>(std::max(1.f, available.y));
         if (rw < 2 || rh < 2) return;
-        if (viewport_.getSize() != sf::Vector2u{rw,rh}) viewport_.resize({rw,rh});
+        if (viewport_.getSize() != sf::Vector2u{rw,rh}) {
+            if (!viewport_.resize({rw,rh})) {
+                notify("Could not resize the scene render texture.");
+                return;
+            }
+        }
         viewportW_ = static_cast<float>(rw);
         viewportH_ = static_cast<float>(rh);
         const sf::View view(camera_, {viewportW_*zoom_,viewportH_*zoom_});
