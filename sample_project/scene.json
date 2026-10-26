@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "title": "SpriteForge Demo",
+  "size": [
+    960,
+    540
+  ],
+  "background": [
+    31,
+    39,
+    64
+  ],
+  "objects": [
+    {
+      "id": 1,
+      "name": "Ground 1",
+      "texture": "assets/ground.png",
+      "position": [
+        0,
+        470
+      ],
+      "scale": [
+        5,
+        5
+      ],
+      "rotation": 0,
+      "visible": true,
+      "controllable": false,
+      "moveSpeed": 260
+    },
+    {
+      "id": 2,
+      "name": "Ground 2",
+      "texture": "assets/ground.png",
+      "position": [
+        320,
+        470
+      ],
+      "scale": [
+        5,
+        5
+      ],
+      "rotation": 0,
+      "visible": true,
+      "controllable": false,
+      "moveSpeed": 260
+    },
+    {
+      "id": 3,
+      "name": "Ground 3",
+      "texture": "assets/ground.png",
+      "position": [
+        640,
+        470
+      ],
+      "scale": [
+        5,
+        5
+      ],
+      "rotation": 0,
+      "visible": true,
+      "controllable": false,
+      "moveSpeed": 260
+    },
+    {
+      "id": 4,
+      "name": "Player (WASD)",
+      "texture": "assets/player.png",
+      "position": [
+        200,
+        330
+      ],
+      "scale": [
+        3,
+        3
+      ],
+      "rotation": 0,
+      "visible": true,
+      "controllable": true,
+      "moveSpeed": 260
+    },
+    {
+      "id": 5,
+      "name": "Enemy",
+      "texture": "assets/enemy.png",
+      "position": [
+        660,
+        360
+      ],
+      "scale": [
+        3,
+        3
+      ],
+      "rotation": 0,
+      "visible": true,
+      "controllable": false,
+      "moveSpeed": 260
+    }
+  ]
+}
