@@ -30,7 +30,7 @@ FetchContent_Declare(json
     URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-add_library(EngineCore STATIC src/EngineCore.cpp src/Behaviors.cpp)
+add_library(EngineCore STATIC src/EngineCore.cpp src/Behaviors.cpp src/Physics.cpp src/BitmapFont.cpp)
 target_compile_features(EngineCore PUBLIC cxx_std_17)
 target_include_directories(EngineCore PUBLIC src)
 target_link_libraries(EngineCore PUBLIC SFML::Graphics nlohmann_json::nlohmann_json)
@@ -48,6 +48,10 @@ add_custom_command(TARGET Editor POST_BUILD
             ${CMAKE_CURRENT_SOURCE_DIR}/src/Runtime.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/EngineCore.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/EngineCore.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/Physics.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/Physics.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/BitmapFont.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/BitmapFont.h
             ${CMAKE_CURRENT_SOURCE_DIR}/src/Behaviors.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/Behaviors.h
             ${CMAKE_CURRENT_SOURCE_DIR}/src/SteamIntegration.cpp

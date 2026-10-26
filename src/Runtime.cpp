@@ -47,9 +47,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         forge::BehaviorSystem behaviors(registry);
         behaviors.start(scene);
         sf::RenderWindow window(sf::VideoMode({scene.width, scene.height}), scene.title);
-        window.setVerticalSyncEnabled(true);
+        window.setVerticalSyncEnabled(false);
+        window.setFramerateLimit(static_cast<unsigned>(scene.physics.maxRenderFps));
         forge::TextureCache textures;
         sf::Clock clock;
+        double accumulator = 0.0;
+        const double fixedDt = 1.0 / static_cast<double>(scene.physics.fixedHz);
         while (window.isOpen()) {
             while (auto event = window.pollEvent()) {
                 if (event->is<sf::Event::Closed>()) window.close();
@@ -58,10 +61,20 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
                 }
             }
             forge::steam::pump();
-            float dt = std::min(clock.restart().asSeconds(), 0.05f);
+            // Fixed timestep decouples the simulation rate (240 Hz) from
+            // rendering (up to 480 FPS). Limit catch-up to avoid a death spiral.
+            const double elapsed = std::min(0.1, static_cast<double>(clock.restart().asSeconds()));
+            accumulator += elapsed;
             const forge::InputState input = window.hasFocus()
                 ? forge::readKeyboardInput() : forge::InputState{};
-            behaviors.update(scene, input, dt);
+            int ticks = 0;
+            while (accumulator >= fixedDt && ticks < 24) {
+                behaviors.update(scene, input, static_cast<float>(fixedDt));
+                forge::stepPhysics(scene, static_cast<float>(fixedDt));
+                accumulator -= fixedDt;
+                ++ticks;
+            }
+            if (ticks == 24) accumulator = 0.0;
             window.clear(scene.background);
             forge::drawScene(window, scene, folder, textures);
             window.display();

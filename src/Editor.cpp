@@ -1,4 +1,5 @@
 #include "EngineCore.h"
+#include "BitmapFont.h"
 #include "Behaviors.h"
 #include "ProjectWorkspace.h"
 #include "BuildRunner.h"
@@ -20,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <cctype>
 
 using namespace forge;
 
@@ -182,6 +184,21 @@ class EditorApp {
     bool tilePaintMode_ = false;
     bool tileEraser_ = false;
     sf::Vector2i hoveredTile_{-1, -1};
+    enum class TileTool { Paint, Erase, Rectangle, Eyedropper };
+    TileTool tileTool_ = TileTool::Paint;
+    int brushSize_ = 1;
+    int tileLayer_ = 0;
+    sf::Vector2i rectangleStart_{-1, -1};
+    bool showColliders_ = false;
+    BitmapFont font_{};
+    int selectedGlyph_ = 65;
+    char fontFileName_[96] = "CustomPixelFont";
+    char fontName_[96] = "Custom Pixel Font";
+    bool fontDirty_ = false;
+    int newTextCounter_ = 0;
+    sf::Vector2f inspectorForce_{0.f,0.f};
+    float inspectorTorque_ = 0.f;
+    bool fontEditorVisible_ = true;
 
 public:
     EditorApp()
@@ -192,7 +209,9 @@ public:
         workspace_.initialize();
         loadSteamSettings();
         reloadRegistry();
-        window_.setVerticalSyncEnabled(true);
+        window_.setVerticalSyncEnabled(false);
+        window_.setFramerateLimit(480);
+        font_.reset(8, 8);
         if (!fs::exists(currentSceneFile_)) {
             fs::create_directories(projectDir_ / "assets");
             currentSceneFile_.clear();
@@ -210,6 +229,19 @@ public:
         ImGui::StyleColorsDark();
         ImGui::GetStyle().WindowRounding = 3.f;
         ImGui::GetStyle().FrameRounding = 3.f;
+        // Blue-black theme resembling the SpriteForge tilemap concept.
+        auto& style = ImGui::GetStyle();
+        style.Colors[ImGuiCol_WindowBg] = ImVec4(.035f,.065f,.11f,1.f);
+        style.Colors[ImGuiCol_TitleBg] = ImVec4(.045f,.09f,.15f,1.f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(.07f,.15f,.24f,1.f);
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(.075f,.13f,.22f,1.f);
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(.12f,.21f,.33f,1.f);
+        style.Colors[ImGuiCol_Button] = ImVec4(.09f,.21f,.36f,1.f);
+        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(.16f,.32f,.51f,1.f);
+        style.Colors[ImGuiCol_Header] = ImVec4(.11f,.27f,.45f,1.f);
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(.17f,.34f,.55f,1.f);
+        style.Colors[ImGuiCol_Tab] = ImVec4(.06f,.14f,.24f,1.f);
+        style.Colors[ImGuiCol_TabSelected] = ImVec4(.10f,.29f,.49f,1.f);
         sf::Clock clock;
         while (window_.isOpen()) {
             while (auto event = window_.pollEvent()) {
@@ -573,6 +605,118 @@ private:
         requestBuild(AfterBuild::Export);
     }
 
+    fs::path currentFontFile() const { return projectDir_ / "assets" / "fonts" / (std::string(fontFileName_) + ".sffont.json"); }
+    bool saveFont() {
+        std::string err;
+        font_.name=fontName_;
+        for(const char* c=fontFileName_;*c;++c) if(!std::isalnum(static_cast<unsigned char>(*c)) && *c!='_' && *c!='-') {
+            notify("Font filename supports only letters, digits, _ and -"); return false;
+        }
+        if(!saveBitmapFont(font_,currentFontFile(),err)) { notify("Font save: "+err); return false; }
+        fontDirty_=false;
+        clearLoadedBitmapFonts();
+        notify("Saved font " + currentFontFile().string());
+        return true;
+    }
+    void fontPanel() {
+        if(!fontEditorVisible_) { if(ImGui::Button("Open Font Editor")) fontEditorVisible_=true; return; }
+        if(ImGui::Button("New")) {
+            font_.reset(8,8);fontDirty_=true;std::strncpy(fontFileName_,"CustomPixelFont",sizeof(fontFileName_)-1);
+        }
+        ImGui::SameLine();if(ImGui::Button("Save font")) saveFont();
+        ImGui::SameLine();if(ImGui::Button("Export atlas")) {
+            if(saveFont()) {
+                std::string err;
+                const fs::path png=currentFontFile().parent_path() / (std::string(fontFileName_)+".png");
+                if(exportBitmapAtlas(font_,png,err)) notify("Exported "+png.string());
+                else notify("Font PNG: "+err);
+            }
+        }
+        ImGui::SetNextItemWidth(160.f);ImGui::InputText("File name",fontFileName_,sizeof(fontFileName_));
+        ImGui::SetNextItemWidth(160.f);ImGui::InputText("Font name",fontName_,sizeof(fontName_));
+        if(ImGui::Button("Import font...")) {
+            const fs::path file=chooseFile(false,window_.getNativeHandle());
+            if(!file.empty()) {
+                BitmapFont candidate;
+                std::string err;
+                if(!loadBitmapFont(candidate,file,err))notify("Import font: "+err);
+                else {
+                    std::string stem=file.filename().string();
+                    const std::string suffix=".sffont.json";
+                    if(stem.size()>=suffix.size() && stem.substr(stem.size()-suffix.size())==suffix)
+                        stem.erase(stem.size()-suffix.size());
+                    else stem=file.stem().string();
+                    stem=safeGameName(stem.c_str());
+                    std::strncpy(fontFileName_,stem.c_str(),sizeof(fontFileName_)-1);
+                    fontFileName_[sizeof(fontFileName_)-1]=0;
+                    font_=std::move(candidate);
+                    std::strncpy(fontName_,font_.name.c_str(),sizeof(fontName_)-1);
+                    fontName_[sizeof(fontName_)-1]=0;
+                    fontDirty_=true;
+                    saveFont();
+                }
+            }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Load font")) {
+            std::string err;
+            if(loadBitmapFont(font_,currentFontFile(),err)) {
+                std::strncpy(fontName_,font_.name.c_str(),sizeof(fontName_)-1);
+                fontName_[sizeof(fontName_)-1]=0; fontDirty_=false;
+                clearLoadedBitmapFonts();
+                notify("Loaded font");
+            } else notify("Font load: "+err);
+        }
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(115.f);
+        if(ImGui::InputInt("Glyph ASCII",&selectedGlyph_)) selectedGlyph_=std::clamp(selectedGlyph_,32,126);
+        ImGui::SameLine();ImGui::Text("%c",selectedGlyph_);
+        int size[2]={font_.width,font_.height};
+        if(ImGui::InputInt2("Glyph W/H",size)) {
+            if(size[0]!=font_.width||size[1]!=font_.height) { font_.reset(size[0],size[1]);fontDirty_=true; }
+        }
+        if(ImGui::InputInt("Advance",&font_.advance)) {font_.advance=std::clamp(font_.advance,1,64);fontDirty_=true;}
+        if(ImGui::InputInt("Baseline",&font_.baseline)) {font_.baseline=std::clamp(font_.baseline,0,font_.height);fontDirty_=true;}
+        const float cell=std::clamp(195.f/static_cast<float>(std::max(font_.width,font_.height)),5.f,22.f);
+        ImDrawList* dl=ImGui::GetWindowDrawList();
+        auto& pixels=font_.glyph(selectedGlyph_);
+        for(int y=0;y<font_.height;++y) {
+            for(int x=0;x<font_.width;++x) {
+                ImGui::PushID(y*font_.width+x);
+                const ImVec2 top=ImGui::GetCursorScreenPos();
+                const bool fill=pixels[static_cast<size_t>(y*font_.width+x)]!=0;
+                dl->AddRectFilled(top,ImVec2(top.x+cell-1,top.y+cell-1),fill?IM_COL32(240,245,255,255):IM_COL32(35,44,62,255));
+                if(ImGui::InvisibleButton("##px",ImVec2(cell,cell))) {pixels[static_cast<size_t>(y*font_.width+x)]=fill?0:1; fontDirty_=true;}
+                if(ImGui::IsItemHovered()&&ImGui::IsMouseDragging(ImGuiMouseButton_Left)&&ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    pixels[static_cast<size_t>(y*font_.width+x)]=1;fontDirty_=true;
+                }
+                if(ImGui::IsItemHovered()&&ImGui::IsMouseDown(ImGuiMouseButton_Right)) {pixels[static_cast<size_t>(y*font_.width+x)]=0;fontDirty_=true;}
+                if(x+1<font_.width)ImGui::SameLine(0.f,0.f);
+                ImGui::PopID();
+            }
+        }
+        ImGui::TextDisabled("Left: paint  Right: erase   %s",fontDirty_?"*unsaved":"saved");
+        ImGui::TextDisabled("ASCII 32-126; usable as scene text after saving.");
+        for(int i=32;i<=126;++i) {
+            ImGui::PushID(i);
+            const std::string str(1,static_cast<char>(i));
+            if(ImGui::SmallButton(str.c_str(),ImVec2(22.f,22.f))) selectedGlyph_=i;
+            if((i-31)%9!=0 && i!=126)ImGui::SameLine(0.f,2.f);
+            ImGui::PopID();
+        }
+    }
+
+    void addTextObject() {
+        TextObject obj;
+        obj.id=scene_.nextId++; obj.name="Bitmap Text";
+        obj.text="HELLO WORLD";obj.position=camera_;
+        if(fs::exists(currentFontFile()))
+            obj.bitmapFont="assets/fonts/"+std::string(fontFileName_)+".sffont.json";
+        scene_.textObjects.push_back(std::move(obj));
+        selectedId_=scene_.textObjects.back().id;
+        notify("Created text object; use Inspector to assign a bitmap font.");
+    }
+
     void menuBar() {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
@@ -610,8 +754,15 @@ private:
                 ImGui::MenuItem("Expand code panel", nullptr, &codeExpanded_);
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Tools")) {
+                if(ImGui::MenuItem("Create bitmap text")) addTextObject();
+                if(ImGui::MenuItem("Save bitmap font")) saveFont();
+                ImGui::MenuItem("Font editor",nullptr,&fontEditorVisible_);
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("View")) {
                 ImGui::MenuItem("Grid", nullptr, &grid_);
+                ImGui::MenuItem("Colliders", nullptr, &showColliders_);
                 if (ImGui::MenuItem("Center on scene")) camera_ = {scene_.width/2.f, scene_.height/2.f};
                 if (ImGui::MenuItem("Reset zoom")) zoom_ = 1.f;
                 ImGui::EndMenu();
@@ -625,103 +776,157 @@ private:
         }
     }
 
-    void mainPanels() {
-        const auto size = ImGui::GetIO().DisplaySize;
-        const float top = ImGui::GetFrameHeight() + 4.f;
-        const float bottom = 26.f;
-        const float leftWidth = std::max(175.f, size.x * 0.18f);
-        const float rightWidth = std::max(205.f, size.x * 0.22f);
-        const float assetHeight = codeExpanded_ ? std::max(260.f, size.y * 0.65f)
-            : std::clamp(size.y * 0.35f, 220.f, 380.f);
-        const float centerW = std::max(100.f, size.x-leftWidth-rightWidth);
-        const float centerH = std::max(100.f, size.y-top-assetHeight-bottom);
-        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
-
-        ImGui::SetNextWindowPos({0.f, top});
-        ImGui::SetNextWindowSize({leftWidth, size.y-top-bottom});
-        ImGui::Begin("Hierarchy", nullptr, flags);
-        drawPanelTitle("Objects");
-        ImGui::BeginDisabled(builder_.busy());
-        if (ImGui::Button("+ Sprite")) {
-            const auto all = assetsIn(projectDir_);
-            if (all.empty()) notify("Import an image into the Assets panel first.");
-            else addSprite("assets/" + all.front().filename().string(), camera_);
+    void hierarchyPanel() {
+        if(ImGui::Button("+ Sprite")) {
+            const auto all=assetsIn(projectDir_);
+            if(all.empty())notify("Import an image first.");
+            else addSprite("assets/"+all.front().filename().string(),camera_);
         }
         ImGui::SameLine();
-        if (ImGui::Button(scene_.tilemap.enabled ? "+ Tilemap" : "Create Tilemap")) {
-            ensureTilemapEnabled();
-            selectedId_ = kTilemapSelection;
-            tilePaintMode_ = true;
+        if(ImGui::SmallButton("+ Tilemap")) {
+            ensureTilemapEnabled();selectedId_=kTilemapSelection;tilePaintMode_=true;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Delete")) {
-            if (selectedId_ >= 0) { scene_.remove(selectedId_); selectedId_ = -1; }
-            else if (selectedId_ == kTilemapSelection) {
-                scene_.tilemap = TilemapData{};
-                selectedId_ = -1;
-                tilePaintMode_ = false;
-            }
-        }
-        ImGui::Separator();
-        if (ImGui::Selectable("Scene", selectedId_ == -1)) selectedId_ = -1;
-        if (scene_.tilemap.enabled) {
-            if (ImGui::Selectable(scene_.tilemap.name.c_str(), selectedId_ == kTilemapSelection)) selectedId_ = kTilemapSelection;
-        }
-        for (const auto& object : scene_.objects) {
-            ImGui::PushID(object.id);
-            if (ImGui::Selectable(object.name.c_str(), selectedId_ == object.id)) selectedId_ = object.id;
-            if (ImGui::BeginDragDropSource()) {
-                ImGui::SetDragDropPayload("OBJECT_ID", &object.id, sizeof(object.id));
-                ImGui::TextUnformatted(object.name.c_str());
-                ImGui::EndDragDropSource();
-            }
-            if (ImGui::BeginDragDropTarget()) {
-                if (const auto* payload = ImGui::AcceptDragDropPayload("OBJECT_ID")) {
-                    const int from = *static_cast<const int*>(payload->Data);
-                    auto a = std::find_if(scene_.objects.begin(), scene_.objects.end(),
-                                          [from](const Object& o){return o.id == from;});
-                    auto b = std::find_if(scene_.objects.begin(), scene_.objects.end(),
-                                          [id=object.id](const Object& o){return o.id == id;});
-                    if (a != scene_.objects.end() && b != scene_.objects.end()) std::iter_swap(a,b);
-                }
-                ImGui::EndDragDropTarget();
-            }
+        if(ImGui::SmallButton("+ Text"))addTextObject();
+        if(ImGui::Selectable("MainScene",selectedId_==-1))selectedId_=-1;
+        if(scene_.tilemap.enabled && ImGui::Selectable(scene_.tilemap.name.c_str(),selectedId_==kTilemapSelection))
+            selectedId_=kTilemapSelection;
+        for(const auto& obj:scene_.objects) {
+            ImGui::PushID(obj.id);
+            if(ImGui::Selectable(obj.name.c_str(),selectedId_==obj.id))selectedId_=obj.id;
             ImGui::PopID();
         }
-        ImGui::EndDisabled();
-        ImGui::End();
+        for(const auto& t:scene_.textObjects) {
+            ImGui::PushID(t.id);
+            if(ImGui::Selectable(t.name.c_str(),selectedId_==t.id))selectedId_=t.id;
+            ImGui::PopID();
+        }
+        if(ImGui::Button("Delete selected")) {
+            if(selectedId_==kTilemapSelection){scene_.tilemap=TilemapData{};tilePaintMode_=false;}
+            else if(scene_.find(selectedId_))scene_.remove(selectedId_);
+            else scene_.textObjects.erase(std::remove_if(scene_.textObjects.begin(),scene_.textObjects.end(),
+                [&](const TextObject& t){return t.id==selectedId_;}),scene_.textObjects.end());
+            selectedId_=-1;
+        }
+    }
 
-        ImGui::SetNextWindowPos({size.x-rightWidth, top});
-        ImGui::SetNextWindowSize({rightWidth, size.y-top-bottom});
-        ImGui::Begin("Inspector", nullptr, flags);
-        inspector();
-        ImGui::End();
-
-        ImGui::SetNextWindowPos({leftWidth,top});
-        ImGui::SetNextWindowSize({centerW,centerH});
-        ImGui::Begin("Scene", nullptr, flags | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        sceneViewport();
-        ImGui::End();
-
-        ImGui::SetNextWindowPos({leftWidth,top+centerH});
-        ImGui::SetNextWindowSize({centerW,assetHeight});
-        ImGui::Begin("Assets / Code / Build", nullptr, flags);
-        if (ImGui::BeginTabBar("WorkspaceTabs")) {
-            if (ImGui::BeginTabItem("Assets")) { assetBrowser(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Tilemap")) { tilemapPanel(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Code")) { codePanel(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Steam")) { steamPanel(); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Build Output")) { buildOutputPanel(); ImGui::EndTabItem(); }
+    void arrayDataPanel() {
+        if(ImGui::BeginTabBar("WorldTabs")) {
+            if(ImGui::BeginTabItem("Array View")) {
+                if(!scene_.tilemap.enabled){ImGui::TextDisabled("Create a tilemap to see its 2D array.");}
+                else {
+                    const auto& tm=scene_.tilemap;
+                    ImGui::BeginChild("ArrayGrid",ImVec2(ImGui::GetContentRegionAvail().x*.60f,0),true,ImGuiWindowFlags_HorizontalScrollbar);
+                    const int firstX=std::clamp(hoveredTile_.x>=0?hoveredTile_.x-4:0,0,std::max(0,tm.width-1));
+                    const int firstY=std::clamp(hoveredTile_.y>=0?hoveredTile_.y-4:0,0,std::max(0,tm.height-1));
+                    for(int y=firstY;y<std::min(tm.height,firstY+12);++y){
+                        for(int x=firstX;x<std::min(tm.width,firstX+16);++x){
+                            ImGui::PushID(y*tm.width+x);
+                            ImGui::Text("%d",tm.getLayer(tileLayer_,x,y));
+                            if(x+1<std::min(tm.width,firstX+16))ImGui::SameLine(0.f,11.f);
+                            ImGui::PopID();
+                        }
+                    }
+                    ImGui::EndChild();ImGui::SameLine();
+                    ImGui::BeginChild("ArrayStats",ImVec2(0,0),false);
+                    ImGui::Text("Layer: %d",tileLayer_);
+                    ImGui::Text("Cursor: (%d, %d)",hoveredTile_.x,hoveredTile_.y);
+                    if(tm.inBounds(hoveredTile_.x,hoveredTile_.y)) ImGui::Text("Value: %d",tm.getLayer(tileLayer_,hoveredTile_.x,hoveredTile_.y));
+                    ImGui::Text("World: %d x %d",tm.width,tm.height);
+                    ImGui::Text("Block: %dpx",tm.blockSize);
+                    ImGui::Text("Cells: %zu",tm.cells.size());
+                    ImGui::EndChild();
+                }
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("Code")) {codePanel(); ImGui::EndTabItem();}
+            if(ImGui::BeginTabItem("Build Output")){buildOutputPanel();ImGui::EndTabItem();}
+            if(ImGui::BeginTabItem("Steam")){steamPanel();ImGui::EndTabItem();}
             ImGui::EndTabBar();
         }
-        ImGui::End();
+    }
 
-        ImGui::SetNextWindowPos({0.f,size.y-bottom});
-        ImGui::SetNextWindowSize({size.x,bottom});
-        ImGui::Begin("Status", nullptr, flags | ImGuiWindowFlags_NoTitleBar);
-        ImGui::TextUnformatted(status_.c_str());
-        ImGui::End();
+    void tilePalettePanel() {
+        if(!scene_.tilemap.enabled){
+            ImGui::TextWrapped("Create a tilemap in Hierarchy to paint a block array.");
+            if(ImGui::Button("Create Tilemap")){ensureTilemapEnabled();selectedId_=kTilemapSelection;tilePaintMode_=true;}
+            return;
+        }
+        ImGui::Checkbox("Paint mode",&tilePaintMode_);
+        ImGui::SameLine();ImGui::Text("Selected ID %d",selectedTileId_);
+        ImGui::RadioButton("Layer 0",&tileLayer_,0);ImGui::SameLine();
+        ImGui::RadioButton("Layer 1",&tileLayer_,1);ImGui::SameLine();
+        ImGui::RadioButton("Layer 2",&tileLayer_,2);
+        if(ImGui::BeginTabBar("PaletteTabs")){
+            if(ImGui::BeginTabItem("Tiles")) {
+                if(ImGui::SmallButton("Air / Erase")){selectedTileId_=0;tileTool_=TileTool::Erase;tilePaintMode_=true;}
+                const auto assets=assetsIn(projectDir_);
+                int n=0;
+                for(const auto& path:assets){
+                    const auto* tex=textures_.get(path);if(!tex)continue;
+                    const int id=ensureTileDefinition("assets/"+path.filename().string());
+                    ImGui::PushID(id);
+                    const auto sz=tex->getSize();
+                    if(ImGui::ImageButton("##tile",*tex,{42.f,42.f})){
+                        selectedTileId_=id;tileTool_=TileTool::Paint;tilePaintMode_=true;
+                    }
+                    if(ImGui::IsItemHovered())ImGui::SetTooltip("ID %d: %s",id,path.stem().string().c_str());
+                    if(++n%4!=0)ImGui::SameLine();
+                    ImGui::PopID();
+                }
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("Tools")){
+                int t=static_cast<int>(tileTool_);
+                ImGui::RadioButton("Paint",&t,0);ImGui::SameLine();ImGui::RadioButton("Erase",&t,1);
+                ImGui::RadioButton("Rectangle Fill",&t,2);ImGui::SameLine();ImGui::RadioButton("Eyedropper",&t,3);
+                tileTool_=static_cast<TileTool>(t);
+                ImGui::SliderInt("Brush size",&brushSize_,1,16);
+                ImGui::TextWrapped("Left-drag paint; right-click erase; Shift+left-drag or middle-drag to pan.");
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        ImGui::Separator();
+        int t=static_cast<int>(tileTool_);
+        ImGui::RadioButton("Paint##quick",&t,0);ImGui::SameLine();ImGui::RadioButton("Erase##quick",&t,1);
+        ImGui::RadioButton("Fill##quick",&t,2);ImGui::SameLine();ImGui::RadioButton("Pick##quick",&t,3);
+        tileTool_=static_cast<TileTool>(t);
+    }
+
+    void mainPanels() {
+        const auto sz=ImGui::GetIO().DisplaySize;
+        const float top=ImGui::GetFrameHeight()+4.f,bottom=26.f;
+        const float left=std::clamp(sz.x*.215f,235.f,330.f);
+        const float right=std::clamp(sz.x*.245f,270.f,380.f);
+        const float mid=std::max(100.f,sz.x-left-right);
+        const float contentH=std::max(150.f,sz.y-top-bottom);
+        const float hierarchyH=contentH*.24f,assetsH=contentH*.33f;
+        const float baseH=codeExpanded_?contentH*.62f:std::clamp(contentH*.29f,190.f,300.f);
+        const float sceneH=std::max(100.f,contentH-baseH);
+        const float dataW=mid*.65f;
+        const auto flags=ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoSavedSettings;
+        ImGui::SetNextWindowPos({0,top});ImGui::SetNextWindowSize({left,hierarchyH});
+        ImGui::Begin("Hierarchy",nullptr,flags);hierarchyPanel();ImGui::End();
+        ImGui::SetNextWindowPos({0,top+hierarchyH});ImGui::SetNextWindowSize({left,assetsH});
+        ImGui::Begin("Assets",nullptr,flags);assetBrowser();ImGui::End();
+        ImGui::SetNextWindowPos({0,top+hierarchyH+assetsH});
+        ImGui::SetNextWindowSize({left,contentH-hierarchyH-assetsH});
+        ImGui::Begin("Font Editor",nullptr,flags);fontPanel();ImGui::End();
+        ImGui::SetNextWindowPos({left,top});ImGui::SetNextWindowSize({mid,sceneH});
+        ImGui::Begin("Scene View",nullptr,flags|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+        sceneViewport();ImGui::End();
+        ImGui::SetNextWindowPos({left,top+sceneH});ImGui::SetNextWindowSize({dataW,baseH});
+        ImGui::Begin("Array / World Data | Code / Build",nullptr,flags);
+        arrayDataPanel();ImGui::End();
+        ImGui::SetNextWindowPos({left+dataW,top+sceneH});ImGui::SetNextWindowSize({mid-dataW,baseH});
+        ImGui::Begin("Tile Palette / Array Tools",nullptr,flags);
+        tilePalettePanel();ImGui::End();
+        ImGui::SetNextWindowPos({left+mid,top});ImGui::SetNextWindowSize({right,contentH});
+        ImGui::Begin("Inspector",nullptr,flags);inspector();ImGui::End();
+        ImGui::SetNextWindowPos({0,sz.y-bottom});ImGui::SetNextWindowSize({sz.x,bottom});
+        ImGui::Begin("Status",nullptr,flags|ImGuiWindowFlags_NoTitleBar);
+        ImGui::TextUnformatted(status_.c_str());ImGui::End();
     }
 
     void ensureTilemapEnabled() {
@@ -827,6 +1032,40 @@ private:
         ImGui::TextWrapped("Left-drag to paint, right-drag to erase, middle-drag to pan; turn off Paint Tiles to select and move sprites.");
     }
 
+    void physicsInspector(PhysicsBody& p) {
+        ImGui::Separator();
+        if(ImGui::CollapsingHeader("Physics (Newtonian)",ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Physics enabled",&p.enabled);
+            const char* types[]={"Static","Dynamic","Kinematic"};
+            int type=static_cast<int>(p.type);
+            if(ImGui::Combo("Body type",&type,types,3))p.type=static_cast<BodyType>(type);
+            ImGui::DragFloat2("Collider width/height",&p.size.x,1.f,1.f,4096.f);
+            ImGui::DragFloat("Mass",&p.mass,.05f,.001f,100000.f);
+            ImGui::DragFloat2("Velocity",&p.velocity.x,1.f);
+            ImGui::DragFloat2("Acceleration",&p.acceleration.x,1.f);
+            ImGui::DragFloat("Gravity scale",&p.gravityScale,.05f,-10.f,10.f);
+            ImGui::DragFloat("Linear drag",&p.linearDrag,.02f,0.f,100.f);
+            ImGui::DragFloat("Angular drag",&p.angularDrag,.02f,0.f,100.f);
+            ImGui::SliderFloat("Friction",&p.friction,0.f,1.f);
+            ImGui::SliderFloat("Restitution",&p.restitution,0.f,1.f);
+            ImGui::Checkbox("Tile collisions",&p.collideWithTiles);
+            ImGui::Checkbox("Object collisions",&p.collideWithBodies);
+            ImGui::DragFloat("Inertia",&p.inertia,.05f,.001f,100000.f);
+            ImGui::DragFloat("Angular velocity (deg/s)",&p.angularVelocity,.1f);
+            ImGui::DragFloat("Angular acceleration",&p.angularAcceleration,.1f);
+            ImGui::DragFloat("Rotating frame omega",&p.rotatingFrameRadiansPerSecond,.01f);
+            ImGui::DragFloat2("Frame origin",&p.rotatingFrameOrigin.x,1.f);
+            ImGui::TextWrapped("omega^2*r is an optional centrifugal pseudoforce in a rotating frame. Applied startup forces are used only on the first physics step.");
+            ImGui::Separator();
+            ImGui::DragFloat2("Startup force",&inspectorForce_.x,1.f);
+            if(ImGui::SmallButton("Add force")) applyForce(p,inspectorForce_);
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Impulse")) applyImpulse(p,inspectorForce_);
+            ImGui::DragFloat("Startup torque",&inspectorTorque_,.1f);
+            if(ImGui::SmallButton("Add torque")) applyTorque(p,inspectorTorque_);
+        }
+    }
+
     void inspector() {
         if (selectedId_ == kTilemapSelection) {
             ensureTilemapEnabled();
@@ -845,7 +1084,9 @@ private:
             ImGui::TextDisabled("To remove the Tilemap, select it and click Delete in Hierarchy.");
             ImGui::Checkbox("Paint mode", &tilePaintMode_);
             ImGui::Text("Tiles: %d", static_cast<int>(scene_.tilemap.tiles.size()));
-            ImGui::Text("Array cells: %d", static_cast<int>(scene_.tilemap.cells.size()));
+            ImGui::Text("Array cells: %d x 3 layers", static_cast<int>(scene_.tilemap.cells.size()));
+            ImGui::SliderInt("Chunk size",&scene_.tilemap.chunkSize,8,256);
+            ImGui::TextDisabled("Visible-tile batching; disk chunk streaming not yet available.");
             if (selectedTileId_ != 0) {
                 if (const auto* def = selectedTileDefinition()) ImGui::Text("Selected tile: %d (%s)", def->id, def->name.c_str());
             } else {
@@ -853,6 +1094,23 @@ private:
             }
             ImGui::Separator();
             ImGui::TextWrapped("Use the Tilemap tab below to choose tile textures and paint directly into the 2D array.");
+            return;
+        }
+        if (auto* t=scene_.findText(selectedId_)) {
+            drawPanelTitle("Bitmap text object");
+            char textBuffer[512]{};std::strncpy(textBuffer,t->text.c_str(),sizeof(textBuffer)-1);
+            if(ImGui::InputTextMultiline("Text",textBuffer,sizeof(textBuffer),ImVec2(-FLT_MIN,80)))t->text=textBuffer;
+            char fontPath[256]{};std::strncpy(fontPath,t->bitmapFont.c_str(),sizeof(fontPath)-1);
+            if(ImGui::InputText("Font path",fontPath,sizeof(fontPath)))t->bitmapFont=fontPath;
+            if(ImGui::Button("Use current font")) t->bitmapFont="assets/fonts/"+std::string(fontFileName_)+".sffont.json";
+            ImGui::DragFloat2("Position",&t->position.x,1.f);
+            ImGui::DragFloat("Pixel scale",&t->pixelScale,.1f,.5f,64.f);
+            float color[4]={t->color.r/255.f,t->color.g/255.f,t->color.b/255.f,t->color.a/255.f};
+            if(ImGui::ColorEdit4("Color",color))t->color=sf::Color(static_cast<std::uint8_t>(color[0]*255),static_cast<std::uint8_t>(color[1]*255),static_cast<std::uint8_t>(color[2]*255),static_cast<std::uint8_t>(color[3]*255));
+            if(ImGui::Button("Delete text object")) {
+                scene_.textObjects.erase(std::remove_if(scene_.textObjects.begin(),scene_.textObjects.end(),[&](const TextObject& obj){return obj.id==selectedId_;}),scene_.textObjects.end());
+                selectedId_=-1;
+            }
             return;
         }
         Object* obj = scene_.find(selectedId_);
@@ -872,6 +1130,14 @@ private:
                                              static_cast<std::uint8_t>(background[1]*255),
                                              static_cast<std::uint8_t>(background[2]*255));
             ImGui::Separator();
+            ImGui::Separator();
+            ImGui::Text("World physics / timing");
+            ImGui::DragFloat2("Gravity px/s^2",&scene_.physics.gravity.x,1.f);
+            ImGui::InputInt("Fixed Hz",&scene_.physics.fixedHz);
+            scene_.physics.fixedHz=std::clamp(scene_.physics.fixedHz,30,480);
+            ImGui::InputInt("Max FPS",&scene_.physics.maxRenderFps);
+            scene_.physics.maxRenderFps=std::clamp(scene_.physics.maxRenderFps,30,1000);
+            ImGui::TextWrapped("Physics is simulated in game runtime at fixed Hz; the editor is capped at 480 FPS.");
             ImGui::TextWrapped("Select Scene, Tilemap_World, or a sprite in the hierarchy or viewport to edit its properties.");
             return;
         }
@@ -926,6 +1192,7 @@ private:
                 ImGui::TextWrapped("Create its C++ source or add it to behaviors.json and reload metadata.");
             }
         }
+        physicsInspector(obj->physics);
         if (ImGui::SmallButton("Where do I write C++ behaviors?")) showScriptHelp_ = true;
         ImGui::Separator();
         ImGui::TextWrapped("Texture: %s", obj->texture.c_str());
@@ -945,6 +1212,7 @@ private:
             newObj.moveSpeed = copy.moveSpeed;
             newObj.behavior = copy.behavior;
             newObj.behaviorValues = copy.behaviorValues;
+            newObj.physics = copy.physics;
             selectedId_ = newObj.id;
         }
     }
@@ -960,7 +1228,7 @@ private:
     void assetBrowser() {
         if (ImGui::Button("Import PNG / JPG...")) importImage();
         ImGui::SameLine();
-        ImGui::TextDisabled("Drag a thumbnail into Scene to create an object");
+        ImGui::TextDisabled("Drag sprites into the scene");
         ImGui::Separator();
         const auto all = assetsIn(projectDir_);
         if (all.empty()) { ImGui::TextDisabled("No images. Import one to start."); return; }
@@ -985,7 +1253,7 @@ private:
                 ImGui::Button("Invalid", {64,64});
             }
             ImGui::TextWrapped("%s", path.filename().string().c_str());
-            if (i+1 < static_cast<int>(all.size())) ImGui::SameLine(0.f, 12.f);
+            if (i+1 < static_cast<int>(all.size()) && i % 2 == 0) ImGui::SameLine(0.f, 12.f);
             ImGui::PopID();
         }
         ImGui::EndDisabled();
@@ -1173,8 +1441,11 @@ private:
         if (ImGui::Button("1:1")) zoom_ = 1.f;
         ImGui::SameLine();
         ImGui::Checkbox("Paint Tiles", &tilePaintMode_);
+        ImGui::SameLine(); ImGui::Checkbox("Grid", &grid_);
+        ImGui::SameLine(); ImGui::Checkbox("Colliders", &showColliders_);
         ImGui::SameLine();
-        ImGui::TextDisabled("Zoom: %.0f%%   Middle-drag: pan", 100.f/zoom_);
+        ImGui::TextDisabled("Zoom %.0f%% | Pan MMB / Shift+LMB | DT 1/%d | FPS cap %d",
+                            100.f/zoom_, scene_.physics.fixedHz, scene_.physics.maxRenderFps);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(160.f);
         ImGui::InputTextWithHint("##exportname", "EXE name", exportName_, sizeof(exportName_));
@@ -1192,6 +1463,16 @@ private:
         const Scene& active = scene_;
         viewport_.clear(active.background);
         drawScene(viewport_, active, projectDir_, textures_, selectedId_, grid_, zoom_);
+        if(showColliders_) {
+            for(const auto& obj:active.objects) if(obj.physics.enabled) {
+                sf::RectangleShape collision(obj.physics.size);
+                collision.setPosition(obj.position);
+                collision.setFillColor(sf::Color::Transparent);
+                collision.setOutlineColor(sf::Color(70,240,170,220));
+                collision.setOutlineThickness(1.f*zoom_);
+                viewport_.draw(collision);
+            }
+        }
         viewport_.display();
         ImGui::Image(viewport_, {viewportW_,viewportH_});
         const bool hovered = ImGui::IsItemHovered();
@@ -1213,9 +1494,11 @@ private:
                 const sf::Vector2f after = worldAt(io.MousePos);
                 camera_ += before-after;
             }
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+                (io.KeyShift && ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
                 camera_.x -= io.MouseDelta.x * zoom_;
                 camera_.y -= io.MouseDelta.y * zoom_;
+                draggingObject_ = false;
             }
             if (scene_.tilemap.enabled) {
                 const sf::Vector2f at = worldAt(io.MousePos);
@@ -1229,27 +1512,44 @@ private:
             }
         }
 
-        const bool tileEditing = scene_.tilemap.enabled && (tilePaintMode_ || selectedId_ == kTilemapSelection);
-        if (!builder_.busy() && hovered && tileEditing && scene_.tilemap.inBounds(hoveredTile_.x, hoveredTile_.y)) {
-            const int value = tileEraser_ ? 0 : selectedTileId_;
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-                scene_.tilemap.set(hoveredTile_.x, hoveredTile_.y, value);
+        const bool tileEditing=scene_.tilemap.enabled && (tilePaintMode_ || selectedId_==kTilemapSelection);
+        const bool panModifier=io.KeyShift || ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+        const bool cellValid=scene_.tilemap.enabled && scene_.tilemap.inBounds(hoveredTile_.x,hoveredTile_.y);
+        if (!builder_.busy() && hovered && tileEditing && cellValid && !panModifier) {
+            auto paintCell=[&](int x,int y,int value){
+                for(int yy=y;yy<y+brushSize_;++yy)
+                    for(int xx=x;xx<x+brushSize_;++xx) scene_.tilemap.setLayer(tileLayer_,xx,yy,value);
+            };
+            if(ImGui::IsMouseClicked(ImGuiMouseButton_Left) && tileTool_==TileTool::Eyedropper) {
+                selectedTileId_=scene_.tilemap.getLayer(tileLayer_,hoveredTile_.x,hoveredTile_.y);
+                tileTool_=TileTool::Paint;
+            } else if(tileTool_==TileTool::Rectangle) {
+                if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rectangleStart_=hoveredTile_;
+                if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && rectangleStart_.x>=0) {
+                    const int x0=std::min(rectangleStart_.x,hoveredTile_.x);
+                    const int x1=std::max(rectangleStart_.x,hoveredTile_.x);
+                    const int y0=std::min(rectangleStart_.y,hoveredTile_.y);
+                    const int y1=std::max(rectangleStart_.y,hoveredTile_.y);
+                    for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x)
+                        scene_.tilemap.setLayer(tileLayer_,x,y,selectedTileId_);
+                    rectangleStart_={-1,-1};
+                }
+            } else if(ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                paintCell(hoveredTile_.x,hoveredTile_.y,tileTool_==TileTool::Erase?0:selectedTileId_);
             }
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-                scene_.tilemap.set(hoveredTile_.x, hoveredTile_.y, 0);
+            if(ImGui::IsMouseDown(ImGuiMouseButton_Right)) paintCell(hoveredTile_.x,hoveredTile_.y,0);
+        } else if(!builder_.busy() && !tileEditing && !panModifier) {
+            if(hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                const sf::Vector2f at=worldAt(io.MousePos);
+                selectedId_=findObjectAt(scene_,at,projectDir_,textures_);
+                draggingObject_=selectedId_>=0;
+                if(auto* o=scene_.find(selectedId_))objectDragOffset_=o->position-at;
             }
-        } else if (!builder_.busy()) {
-            if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                const sf::Vector2f at = worldAt(io.MousePos);
-                selectedId_ = findObjectAt(scene_, at, projectDir_, textures_);
-                draggingObject_ = selectedId_ >= 0;
-                if (auto* o = scene_.find(selectedId_)) objectDragOffset_ = o->position-at;
-            }
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) draggingObject_ = false;
-            if (draggingObject_ && hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                if (auto* o = scene_.find(selectedId_)) o->position = worldAt(io.MousePos)+objectDragOffset_;
+            if(draggingObject_ && hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                if(auto* o=scene_.find(selectedId_))o->position=worldAt(io.MousePos)+objectDragOffset_;
             }
         }
+        if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))draggingObject_=false;
         if (ImGui::BeginDragDropTarget()) {
             if (const auto* payload = ImGui::AcceptDragDropPayload("SPRITE_ASSET")) {
                 if (payload->Data && payload->DataSize > 1)

@@ -1,5 +1,6 @@
 #pragma once
 #include <SFML/Graphics.hpp>
+#include "Physics.h"
 #include <filesystem>
 #include <memory>
 #include <map>
@@ -24,6 +25,9 @@ struct TilemapData {
     int height = 36;
     int blockSize = 32;
     std::vector<int> cells;
+    std::vector<int> layer1;
+    std::vector<int> layer2;
+    int chunkSize = 64; // Inspector metadata; visible tiles are batched, not streamed from disk.
     std::vector<TileDefinition> tiles;
 
     void resize(int newWidth, int newHeight, int fillValue = 0);
@@ -31,7 +35,19 @@ struct TilemapData {
     int index(int x, int y) const;
     int get(int x, int y) const;
     void set(int x, int y, int value);
+    int getLayer(int layer, int x, int y) const;
+    void setLayer(int layer, int x, int y, int value);
     const TileDefinition* tileById(int id) const;
+};
+
+struct TextObject {
+    int id = 0;
+    std::string name = "Text";
+    std::string text = "HELLO";
+    std::string bitmapFont; // assets/fonts/*.sffont.json
+    sf::Vector2f position{};
+    float pixelScale = 2.f;
+    sf::Color color{255, 255, 255};
 };
 
 struct Object {
@@ -47,6 +63,7 @@ struct Object {
     // Name of a statically compiled C++ behavior. Empty = no custom behavior.
     std::string behavior;
     std::map<std::string, float> behaviorValues;
+    PhysicsBody physics;
 };
 
 struct Scene {
@@ -55,6 +72,8 @@ struct Scene {
     unsigned height = 540;
     sf::Color background{38, 43, 59};
     std::vector<Object> objects;
+    std::vector<TextObject> textObjects;
+    PhysicsSettings physics;
     TilemapData tilemap;
     int nextId = 1;
 
@@ -62,6 +81,7 @@ struct Scene {
     Object* find(int id);
     const Object* find(int id) const;
     bool remove(int id);
+    TextObject* findText(int id);
 };
 
 class TextureCache {
@@ -73,6 +93,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<sf::Texture>> textures_;
 };
 
+void clearLoadedBitmapFonts(); // Refresh pixel-font previews after saving an edited font.
 bool saveScene(const Scene& scene, const fs::path& path, std::string& error);
 bool loadScene(Scene& scene, const fs::path& path, std::string& error);
 

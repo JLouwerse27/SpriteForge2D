@@ -1,3 +1,46 @@
+# SpriteForge 2D v0.6 — Tilemaps, Fixed-Step Physics & Pixel Fonts
+
+This edition adds an expanded dark-blue editor layout, scene physics, and a bitmap font editor while retaining the existing visual scene editor, independent C++ game builds, and optional Steamworks integration.
+
+## New editor workflow
+
+1. **Rebuild the editor** once after pulling engine changes: `build_windows.bat` (Windows 11 / Visual Studio 2022, CMake 3.28+, Git).
+2. The **Scene View** supports **middle-button drag** or **Shift + left-button drag** to pan. Mouse wheel zooms. When a tilemap is selected, ordinary left-drag paints, and right-drag erases. Select a sprite to move it by dragging.
+3. Use **Tile Palette** to choose a texture and paint on **Layer 0, 1, or 2**. Tools include Paint, Erase, Eyedropper and Rectangle Fill. Use **Array View** to inspect the numeric block values.
+4. The **Inspector** has properties for scene-wide gravity, fixed update frequency and FPS cap, and for per-sprite rigid-body properties (dynamic/static/kinematic, collider size, mass, acceleration, force, impulse, angular velocity, drag, restitution and more).
+5. The **Font Editor** lets you draw printable ASCII glyphs as a bitmap grid. Enter a font file name and click **Save font**; it creates `assets/fonts/<name>.sffont.json`. **Export atlas** also produces a PNG sprite sheet. Use **+ Text** in Hierarchy to place a bitmap text object, then set its font via Inspector.
+6. Existing **Code / Build / Steam** tabs remain accessible under **Array / World Data**.
+
+## Engine timing
+
+- The game simulation accumulates elapsed real time and advances at a **fixed `1 / 240` seconds per tick** by default.
+- Game rendering is independently capped at **480 FPS** by default using `sf::RenderWindow::setFramerateLimit` (a maximum target, **not** a promise of 480 FPS).
+- The editor is also capped at 480 FPS. Display refresh rate, VSync settings, Windows scheduling and CPU/GPU load can lower actual FPS.
+- Change simulation and frame rates using the **Scene** Inspector. Fixed-step physics is advanced after C++ behaviors on each simulation step. Under extreme stalls, a catch-up limit prevents endless backlog.
+
+## Physics and units
+
+The physics solver is **an introductory AABB rigid-body solver**. Positions and distances are measured in *scene pixels*, time in seconds, forces in `mass × pixels/s²`. **Y points downward**, so a default gravity of `+980 px/s²` approximates Earth's 9.8 m/s² if your world uses 100 pixels per meter.
+
+**Supported:** F=ma, impulses, persistent velocities (inertia), linear and angular damping, torque with moment of inertia, angular velocity, bounciness, basic AABB collision with tiles/objects, and an optional `omega²r` **centrifugal pseudoforce** in a rotating reference frame. Call `forge::applyForce(ctx.object.physics, {500.f, 0.f});`, `applyImpulse(...)`, or `applyTorque(...)` in a C++ behavior to control physical objects.
+
+**Limitations:** no polygon or rotated-body collision, wheel physics, joints, contact manifolds, raycasting, advanced friction constraints, swept/continuous collision detection, multi-threaded physics or orbital gravitation. Fast small objects can pass through colliders (tunneling). The collider remains axis-aligned even when the sprite rotates. The editor Inspector's startup force/torque inputs are applied only on the first simulation step.
+
+## Tilemap performance and limitations
+
+Tilemap data is stored as three flattened integer arrays (`cells`, `layer1`, `layer2`). Tile lookup uses `array[y * width + x]`. The renderer skips tiles outside the current SFML view and batches visible triangles by texture and layer. **Chunk size is metadata only**: independent streamed/chunk-cached worlds and automatic tile edge selection are not yet implemented. Collisions use **Layer 0** tiles with tile definitions marked solid. Other layers are rendered but not collision layers.
+
+## Bitmap fonts
+
+Fonts use a **SpriteForge-specific JSON bitmap format**, not `.ttf`/`.otf`. Glyphs are stored as flat arrays of 0/1 pixels for ASCII 32–126. Text objects reference `assets/fonts/<name>.sffont.json` and are rendered by SpriteForge. The PNG atlas is useful for external tools, but the runtime reads the JSON font file. Export copies all assets, including fonts, to your game folder. Current bitmap text rendering is simple and not yet optimized for hundreds of thousands of characters.
+
+## Verification
+
+- Source-level updates and tests for gravity, force accumulation/reset and tile collision were run using a minimal C++17 SFML vector stub.
+- **The complete Windows/SFML 3/ImGui editor and game runtime could not be built in the creation environment**, so Visual Studio build verification and interactive UI testing are still required. Please send the first compiler error (if any) to fix it quickly.
+
+---
+
 # SpriteForge 2D — Independent game projects & built-in C++ editor
 
 A Windows 2D scene editor with **C++17, SFML 3.0.2, Dear ImGui, and JSON scenes**. Each game has its own `scripts/` directory. The editor does **not** link your game scripts. `Build`, `Play`, and `Export EXE` compile your game separately into its own standalone Windows executable (Option A: statically linked C++ behavior classes; no game-logic DLL).

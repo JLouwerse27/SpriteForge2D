@@ -20,7 +20,9 @@ FetchContent_MakeAvailable(json)
 
 add_library(SpriteForgeCore STATIC
     "${SPRITEFORGE_SDK}/src/EngineCore.cpp"
-    "${SPRITEFORGE_SDK}/src/Behaviors.cpp")
+    "${SPRITEFORGE_SDK}/src/Behaviors.cpp"
+    "${SPRITEFORGE_SDK}/src/Physics.cpp"
+    "${SPRITEFORGE_SDK}/src/BitmapFont.cpp")
 target_compile_features(SpriteForgeCore PUBLIC cxx_std_17)
 target_include_directories(SpriteForgeCore PUBLIC "${SPRITEFORGE_SDK}/src")
 target_link_libraries(SpriteForgeCore PUBLIC SFML::Graphics nlohmann_json::nlohmann_json)
