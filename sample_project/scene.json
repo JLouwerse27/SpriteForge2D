@@ -76,8 +76,12 @@
       ],
       "rotation": 0,
       "visible": true,
-      "controllable": true,
-      "moveSpeed": 260
+      "controllable": false,
+      "moveSpeed": 260,
+      "behavior": "MoveWithKeys",
+      "behaviorValues": {
+        "Speed": 260
+      }
     },
     {
       "id": 5,
@@ -94,7 +98,12 @@
       "rotation": 0,
       "visible": true,
       "controllable": false,
-      "moveSpeed": 260
+      "moveSpeed": 260,
+      "behavior": "Patrol",
+      "behaviorValues": {
+        "Distance": 90,
+        "CyclesPerSecond": 0.4
+      }
     }
   ]
 }

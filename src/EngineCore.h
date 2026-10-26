@@ -2,6 +2,7 @@
 #include <SFML/Graphics.hpp>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +20,9 @@ struct Object {
     bool visible = true;
     bool controllable = false;
     float moveSpeed = 230.f;
+    // Name of a statically compiled C++ behavior. Empty = no custom behavior.
+    std::string behavior;
+    std::map<std::string, float> behaviorValues;
 };
 
 struct Scene {
@@ -57,7 +61,7 @@ int findObjectAt(const Scene& scene, sf::Vector2f point,
                  const fs::path& projectRoot, TextureCache& textures);
 
 // A basic game behavior for the first engine version: WASD / arrows.
-void updatePlayerControls(Scene& scene, float dt);
+void updatePlayerControls(Scene& scene, float dt, bool left, bool right, bool up, bool down);
 
 // Returns absolute executable folder, independent of working directory.
 fs::path executableDirectory();

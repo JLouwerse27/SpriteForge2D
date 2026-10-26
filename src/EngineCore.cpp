@@ -60,7 +60,8 @@ bool saveScene(const Scene& scene, const fs::path& path, std::string& error) {
                 {"position", {o.position.x, o.position.y}},
                 {"scale", {o.scale.x, o.scale.y}}, {"rotation", o.rotation},
                 {"visible", o.visible}, {"controllable", o.controllable},
-                {"moveSpeed", o.moveSpeed}
+                {"moveSpeed", o.moveSpeed}, {"behavior", o.behavior},
+                {"behaviorValues", o.behaviorValues}
             });
         }
         fs::create_directories(path.parent_path());
@@ -107,6 +108,9 @@ bool loadScene(Scene& scene, const fs::path& path, std::string& error) {
             o.visible = item.value("visible", true);
             o.controllable = item.value("controllable", false);
             o.moveSpeed = item.value("moveSpeed", 230.f);
+            o.behavior = item.value("behavior", std::string{});
+            if (item.contains("behaviorValues"))
+                o.behaviorValues = item.at("behaviorValues").get<std::map<std::string, float>>();
             if (o.id <= 0 || o.id > 10000000) throw std::runtime_error("Invalid object ID");
             if (loaded.find(o.id)) throw std::runtime_error("Duplicate object ID");
             loaded.nextId = std::max(loaded.nextId, o.id + 1);
@@ -187,18 +191,14 @@ int findObjectAt(const Scene& scene, sf::Vector2f point, const fs::path& root, T
     return -1;
 }
 
-void updatePlayerControls(Scene& scene, float dt) {
+void updatePlayerControls(Scene& scene, float dt, bool left, bool right, bool up, bool down) {
     if (dt <= 0.f) return;
-    const bool left = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Left);
-    const bool right = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Right);
-    const bool up = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up);
-    const bool down = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down);
     float dx = static_cast<float>(right) - static_cast<float>(left);
     float dy = static_cast<float>(down) - static_cast<float>(up);
     const float len = std::sqrt(dx*dx + dy*dy);
     if (len > 0.f) { dx /= len; dy /= len; }
     for (auto& obj : scene.objects) {
-        if (!obj.controllable) continue;
+        if (!obj.controllable || !obj.behavior.empty()) continue;
         obj.position.x = std::clamp(obj.position.x + dx*obj.moveSpeed*dt, 0.f, static_cast<float>(scene.width));
         obj.position.y = std::clamp(obj.position.y + dy*obj.moveSpeed*dt, 0.f, static_cast<float>(scene.height));
     }

@@ -1,4 +1,6 @@
 #include "EngineCore.h"
+#include "Behaviors.h"
+#include "GameBehaviors.h"
 #include <imgui.h>
 #include <imgui-SFML.h>
 #include <windows.h>
@@ -82,19 +84,35 @@ std::vector<fs::path> assetsIn(const fs::path& root) {
     return items;
 }
 
-// Copies only project-relative assets. Export folder is portable, not just a .exe alone.
-void copyUsedAssets(const Scene& scene, const fs::path& oldRoot, const fs::path& newRoot) {
+// Copy the full assets directory: C++ behaviors can spawn sprites whose
+// image paths are not referenced by objects in the saved scene.
+void copyProjectAssets(const Scene& scene, const fs::path& oldRoot, const fs::path& newRoot) {
+    const fs::path srcRoot = fs::absolute(oldRoot / "assets").lexically_normal();
+    const fs::path dstRoot = fs::absolute(newRoot / "assets").lexically_normal();
     for (const auto& object : scene.objects) {
         const fs::path rel = fs::path(object.texture).lexically_normal();
         if (rel.empty() || rel.is_absolute() || *rel.begin() != fs::path("assets") ||
             object.texture.find("..") != std::string::npos)
             throw std::runtime_error("Invalid relative sprite path: " + object.texture);
-        const fs::path src = oldRoot / rel;
-        const fs::path dst = newRoot / rel;
-        if (!fs::exists(src)) throw std::runtime_error("Missing sprite: " + src.string());
+        if (!fs::is_regular_file(oldRoot / rel))
+            throw std::runtime_error("Missing sprite: " + (oldRoot / rel).string());
+    }
+    if (!fs::exists(srcRoot)) return;
+    if (srcRoot == dstRoot) return;
+    // Do not recursively include an export folder created inside assets/.
+    const auto srcStr = srcRoot.generic_string() + "/";
+    const auto dstStr = dstRoot.generic_string() + "/";
+    if (dstStr.compare(0, srcStr.size(), srcStr) == 0)
+        throw std::runtime_error("Cannot export/save project inside its own assets directory");
+
+    for (const auto& entry : fs::recursive_directory_iterator(srcRoot)) {
+        if (entry.is_symlink())
+            throw std::runtime_error("Symlink in assets folder is not supported: " + entry.path().string());
+        if (!entry.is_regular_file()) continue;
+        const fs::path rel = entry.path().lexically_relative(srcRoot);
+        const fs::path dst = dstRoot / rel;
         fs::create_directories(dst.parent_path());
-        if (fs::absolute(src).lexically_normal() != fs::absolute(dst).lexically_normal())
-            fs::copy_file(src, dst, fs::copy_options::overwrite_existing);
+        fs::copy_file(entry.path(), dst, fs::copy_options::overwrite_existing);
     }
 }
 
@@ -107,6 +125,8 @@ class EditorApp {
     sf::RenderWindow window_;
     sf::RenderTexture viewport_{{800u, 450u}};
     TextureCache textures_;
+    BehaviorRegistry registry_;
+    BehaviorSystem behaviorSystem_{registry_};
     Scene scene_;
     Scene playScene_;
     fs::path projectDir_;
@@ -125,12 +145,14 @@ class EditorApp {
     float viewportH_ = 450.f;
     bool grid_ = true;
     bool showAbout_ = false;
+    bool showScriptHelp_ = false;
 
 public:
     EditorApp()
         : window_(sf::VideoMode({1440u, 860u}), "SpriteForge 2D - SFML Scene Editor"),
           projectDir_(executableDirectory() / "Project"),
           currentSceneFile_(projectDir_ / "scene.json") {
+        registerGameBehaviors(registry_);
         window_.setVerticalSyncEnabled(true);
         if (!fs::exists(currentSceneFile_)) {
             fs::create_directories(projectDir_ / "assets");
@@ -157,13 +179,31 @@ public:
             }
             const float dt = std::min(clock.restart().asSeconds(), 0.05f);
             ImGui::SFML::Update(window_, sf::seconds(dt));
-            if (playing_ && !ImGui::GetIO().WantTextInput) updatePlayerControls(playScene_, dt);
+            if (playing_) {
+                try {
+                    const InputState input = (window_.hasFocus() && !ImGui::GetIO().WantTextInput)
+                        ? readKeyboardInput() : InputState{};
+                    behaviorSystem_.update(playScene_, input, dt);
+                } catch (const std::exception& e) {
+                    notify(std::string("C++ behavior error: ") + e.what());
+                    behaviorSystem_.stop(playScene_);
+                    playing_ = false;
+                }
+            }
             menuBar();
             mainPanels();
             if (showAbout_) {
                 ImGui::Begin("About SpriteForge", &showAbout_);
                 ImGui::TextWrapped("SpriteForge 2D is a minimal visual scene editor written with SFML 3 and Dear ImGui. Exported games run in a separate native Windows executable.");
-                ImGui::TextWrapped("This is an MVP: one scene, image sprites, player movement, and no collision system or scripting yet.");
+                ImGui::TextWrapped("C++ behaviors are statically compiled into both the editor and exported game. Modify game/GameBehaviors.cpp, then rebuild and restart the editor.");
+                ImGui::End();
+            }
+            if (showScriptHelp_) {
+                ImGui::Begin("C++ Behaviors (Option A)", &showScriptHelp_);
+                ImGui::TextWrapped("Game code: game/GameBehaviors.cpp");
+                ImGui::TextWrapped("Add a class derived from forge::Behavior and register it in registerGameBehaviors().");
+                ImGui::TextWrapped("Close the editor, run build_windows.bat, and reopen it to test your new compiled code.");
+                ImGui::TextWrapped("The Editor and GameRuntime are both linked with GameCode. Export copies that precompiled runtime; scene and property changes alone require no rebuild.");
                 ImGui::End();
             }
             window_.clear(sf::Color(18, 20, 25));
@@ -180,7 +220,7 @@ private:
         const fs::path dest = chooseFile(true, window_.getNativeHandle());
         if (dest.empty()) return;
         try {
-            copyUsedAssets(scene_, projectDir_, dest.parent_path());
+            copyProjectAssets(scene_, projectDir_, dest.parent_path());
             projectDir_ = dest.parent_path();
             currentSceneFile_ = dest;
             std::string err;
@@ -203,6 +243,7 @@ private:
         Scene loaded;
         std::string err;
         if (!loadScene(loaded, dest, err)) { notify("Open failed: " + err); return; }
+        if (playing_) { behaviorSystem_.stop(playScene_); playing_ = false; }
         scene_ = std::move(loaded);
         projectDir_ = dest.parent_path();
         currentSceneFile_ = dest;
@@ -244,8 +285,10 @@ private:
             const std::string name = safeGameName(exportName_);
             const fs::path out = dest / name;
             fs::create_directories(out);
+            // Fail if a scene references a behavior not compiled into this build.
+            validateBehaviors(scene_, registry_);
             // Validate/copy assets first; then write the scene and executable.
-            copyUsedAssets(scene_, projectDir_, out);
+            copyProjectAssets(scene_, projectDir_, out);
             std::string err;
             if (!saveScene(scene_, out / "scene.json", err)) throw std::runtime_error(err);
             fs::copy_file(runtime, out / (name + ".exe"), fs::copy_options::overwrite_existing);
@@ -257,6 +300,7 @@ private:
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("New scene")) {
+                    if (playing_) behaviorSystem_.stop(playScene_);
                     scene_ = Scene{};
                     selectedId_ = -1;
                     inspectorId_ = -1;
@@ -282,6 +326,7 @@ private:
             }
             if (ImGui::BeginMenu("Help")) {
                 if (ImGui::MenuItem("About")) showAbout_ = true;
+                if (ImGui::MenuItem("C++ Behaviors (Option A)")) showScriptHelp_ = true;
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
@@ -367,7 +412,7 @@ private:
     void inspector() {
         if (playing_) {
             drawPanelTitle("Play mode");
-            ImGui::TextWrapped("Stop the game to edit objects. WASD or arrow keys control sprites marked Controllable.");
+            ImGui::TextWrapped("Stop to edit. Compiled C++ behaviors are running on a temporary scene copy. WASD/arrow keys control MoveWithKeys.");
             return;
         }
         Object* obj = scene_.find(selectedId_);
@@ -400,8 +445,47 @@ private:
         ImGui::DragFloat2("Scale", &obj->scale.x, 0.01f, 0.01f, 100.f);
         ImGui::DragFloat("Rotation", &obj->rotation, 1.f, -360.f, 360.f);
         ImGui::Checkbox("Visible", &obj->visible);
-        ImGui::Checkbox("Controllable", &obj->controllable);
-        if (obj->controllable) ImGui::DragFloat("Speed", &obj->moveSpeed, 1.f, 0.f, 3000.f);
+        if (obj->behavior.empty()) {
+            ImGui::Checkbox("Controllable (legacy)", &obj->controllable);
+            if (obj->controllable) ImGui::DragFloat("Speed", &obj->moveSpeed, 1.f, 0.f, 3000.f);
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted("C++ Behavior (Option A)");
+        const char* currentBehavior = obj->behavior.empty() ? "None" : obj->behavior.c_str();
+        if (ImGui::BeginCombo("Behavior", currentBehavior)) {
+            const bool none = obj->behavior.empty();
+            if (ImGui::Selectable("None", none)) {
+                obj->behavior.clear();
+                obj->behaviorValues.clear();
+            }
+            for (const auto& def : registry_.definitions()) {
+                const bool selected = obj->behavior == def.name;
+                if (ImGui::Selectable(def.name.c_str(), selected)) {
+                    obj->behavior = def.name;
+                    obj->behaviorValues.clear();
+                    for (const auto& setting : def.settings)
+                        obj->behaviorValues[setting.name] = setting.defaultValue;
+                    obj->controllable = false;
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (!obj->behavior.empty()) {
+            if (const auto* def = registry_.find(obj->behavior)) {
+                ImGui::TextDisabled("%s", def->description.c_str());
+                for (const auto& setting : def->settings) {
+                    auto [it, inserted] = obj->behaviorValues.try_emplace(setting.name, setting.defaultValue);
+                    (void)inserted;
+                    ImGui::DragFloat(setting.name.c_str(), &it->second,
+                                     setting.step, setting.minimum, setting.maximum);
+                }
+            } else {
+                ImGui::TextColored({1.f,0.4f,0.4f,1.f}, "Missing compiled class: %s", obj->behavior.c_str());
+                ImGui::TextWrapped("Register the class in game/GameBehaviors.cpp and rebuild.");
+            }
+        }
+        if (ImGui::SmallButton("Where do I write C++ behaviors?")) showScriptHelp_ = true;
         ImGui::Separator();
         ImGui::TextWrapped("Texture: %s", obj->texture.c_str());
         if (const auto* tex = textures_.get(projectDir_ / obj->texture)) {
@@ -415,7 +499,11 @@ private:
                                       {copy.position.x+24, copy.position.y+24});
             newObj.scale = copy.scale;
             newObj.rotation = copy.rotation;
-            newObj.controllable = false;
+            newObj.visible = copy.visible;
+            newObj.controllable = copy.controllable;
+            newObj.moveSpeed = copy.moveSpeed;
+            newObj.behavior = copy.behavior;
+            newObj.behaviorValues = copy.behaviorValues;
             selectedId_ = newObj.id;
         }
     }
@@ -464,8 +552,23 @@ private:
 
     void sceneViewport() {
         if (ImGui::Button(playing_ ? "Stop" : "Play")) {
-            if (playing_) playing_ = false;
-            else { playScene_ = scene_; playing_ = true; selectedId_ = -1; }
+            if (playing_) {
+                behaviorSystem_.stop(playScene_);
+                playing_ = false;
+            } else {
+                try {
+                    validateBehaviors(scene_, registry_);
+                    playScene_ = scene_;
+                    behaviorSystem_.start(playScene_);
+                    playing_ = true;
+                    selectedId_ = -1;
+                    notify("Play mode (compiled C++ game behaviors). Stop to return to editor.");
+                } catch (const std::exception& e) {
+                    notify(std::string("Cannot play: ") + e.what());
+                    behaviorSystem_.stop(playScene_);
+                    playing_ = false;
+                }
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Center")) camera_ = {scene_.width/2.f,scene_.height/2.f};

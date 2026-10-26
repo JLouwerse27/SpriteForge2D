@@ -36,16 +36,25 @@ FetchContent_Declare(json
     URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-add_library(EngineCore STATIC src/EngineCore.cpp src/EngineCore.h)
+add_library(EngineCore STATIC src/EngineCore.cpp src/EngineCore.h
+                              src/Behaviors.cpp src/Behaviors.h)
 target_compile_features(EngineCore PUBLIC cxx_std_17)
 target_include_directories(EngineCore PUBLIC src)
 target_link_libraries(EngineCore PUBLIC SFML::Graphics nlohmann_json::nlohmann_json)
 
+# Option A: compile user-authored C++ behavior classes directly into BOTH
+# the editor (Play mode) and the exported GameRuntime executable.
+# When you add a new game/*.cpp file, CMake detects it automatically on rebuild.
+file(GLOB GAME_CPP CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/game/*.cpp")
+add_library(GameCode STATIC ${GAME_CPP} game/GameBehaviors.h)
+target_include_directories(GameCode PUBLIC game)
+target_link_libraries(GameCode PUBLIC EngineCore)
+
 add_executable(GameRuntime WIN32 src/Runtime.cpp)
-target_link_libraries(GameRuntime PRIVATE EngineCore)
+target_link_libraries(GameRuntime PRIVATE GameCode)
 
 add_executable(Editor WIN32 src/Editor.cpp)
-target_link_libraries(Editor PRIVATE EngineCore ImGui-SFML::ImGui-SFML comdlg32 shell32 ole32)
+target_link_libraries(Editor PRIVATE GameCode ImGui-SFML::ImGui-SFML comdlg32 shell32 ole32)
 add_dependencies(Editor GameRuntime)
 
 # Copy sample project beside the editor (without overwriting user's work on future builds).
