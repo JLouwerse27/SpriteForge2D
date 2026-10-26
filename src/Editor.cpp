@@ -19,10 +19,12 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <sstream>
 
 using namespace forge;
 
 namespace {
+constexpr int kTilemapSelection = -2;
 
 fs::path chooseFile(bool save, HWND owner = nullptr) {
     wchar_t filename[32768] = {};
@@ -91,22 +93,27 @@ std::vector<fs::path> assetsIn(const fs::path& root) {
     return items;
 }
 
-// Copy the full assets directory: C++ behaviors can spawn sprites whose
-// image paths are not referenced by objects in the saved scene.
+// Copy the full assets directory: C++ behaviors and tilemaps can reference
+// images that are not present as ordinary scene objects.
 void copyProjectAssets(const Scene& scene, const fs::path& oldRoot, const fs::path& newRoot) {
     const fs::path srcRoot = fs::absolute(oldRoot / "assets").lexically_normal();
     const fs::path dstRoot = fs::absolute(newRoot / "assets").lexically_normal();
-    for (const auto& object : scene.objects) {
-        const fs::path rel = fs::path(object.texture).lexically_normal();
-        if (rel.empty() || rel.is_absolute() || *rel.begin() != fs::path("assets") ||
-            object.texture.find("..") != std::string::npos)
-            throw std::runtime_error("Invalid relative sprite path: " + object.texture);
+    auto validateRel = [&](const std::string& relPath) {
+        const fs::path rel = fs::path(relPath).lexically_normal();
+        if (rel.empty() || rel.is_absolute() || *rel.begin() != fs::path("assets") || relPath.find("..") != std::string::npos)
+            throw std::runtime_error("Invalid relative asset path: " + relPath);
         if (!fs::is_regular_file(oldRoot / rel))
-            throw std::runtime_error("Missing sprite: " + (oldRoot / rel).string());
+            throw std::runtime_error("Missing asset: " + (oldRoot / rel).string());
+    };
+    for (const auto& object : scene.objects) validateRel(object.texture);
+    if (scene.tilemap.enabled) {
+        for (const auto& tile : scene.tilemap.tiles) {
+            if (tile.id == 0 || tile.texture.empty()) continue;
+            validateRel(tile.texture);
+        }
     }
     if (!fs::exists(srcRoot)) return;
     if (srcRoot == dstRoot) return;
-    // Do not recursively include an export folder created inside assets/.
     const auto srcStr = srcRoot.generic_string() + "/";
     const auto dstStr = dstRoot.generic_string() + "/";
     if (dstStr.compare(0, srcStr.size(), srcStr) == 0)
@@ -171,6 +178,10 @@ class EditorApp {
     bool grid_ = true;
     bool showAbout_ = false;
     bool showScriptHelp_ = false;
+    int selectedTileId_ = 0;
+    bool tilePaintMode_ = false;
+    bool tileEraser_ = false;
+    sf::Vector2i hoveredTile_{-1, -1};
 
 public:
     EditorApp()
@@ -382,6 +393,8 @@ private:
             reloadRegistry();
             selectedCodeFile_.clear(); sourceDirty_ = false;
             selectedId_ = inspectorId_ = -1;
+            selectedTileId_ = 0;
+            tilePaintMode_ = false;
             textures_.clear();
             notify("Opened project " + dest.string());
         } catch (const std::exception& e) { notify(std::string("Open project failed: ") + e.what()); }
@@ -406,6 +419,8 @@ private:
             reloadRegistry();
             selectedCodeFile_.clear(); sourceDirty_ = false;
             selectedId_ = inspectorId_ = -1;
+            selectedTileId_ = 0;
+            tilePaintMode_ = false;
             textures_.clear();
             camera_ = {scene_.width / 2.f, scene_.height / 2.f};
             notify("Created project " + dest.string());
@@ -634,10 +649,25 @@ private:
             else addSprite("assets/" + all.front().filename().string(), camera_);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Delete") && selectedId_ >= 0) {
-            scene_.remove(selectedId_); selectedId_ = -1;
+        if (ImGui::Button(scene_.tilemap.enabled ? "+ Tilemap" : "Create Tilemap")) {
+            ensureTilemapEnabled();
+            selectedId_ = kTilemapSelection;
+            tilePaintMode_ = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+            if (selectedId_ >= 0) { scene_.remove(selectedId_); selectedId_ = -1; }
+            else if (selectedId_ == kTilemapSelection) {
+                scene_.tilemap = TilemapData{};
+                selectedId_ = -1;
+                tilePaintMode_ = false;
+            }
         }
         ImGui::Separator();
+        if (ImGui::Selectable("Scene", selectedId_ == -1)) selectedId_ = -1;
+        if (scene_.tilemap.enabled) {
+            if (ImGui::Selectable(scene_.tilemap.name.c_str(), selectedId_ == kTilemapSelection)) selectedId_ = kTilemapSelection;
+        }
         for (const auto& object : scene_.objects) {
             ImGui::PushID(object.id);
             if (ImGui::Selectable(object.name.c_str(), selectedId_ == object.id)) selectedId_ = object.id;
@@ -679,6 +709,7 @@ private:
         ImGui::Begin("Assets / Code / Build", nullptr, flags);
         if (ImGui::BeginTabBar("WorkspaceTabs")) {
             if (ImGui::BeginTabItem("Assets")) { assetBrowser(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Tilemap")) { tilemapPanel(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Code")) { codePanel(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Steam")) { steamPanel(); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Build Output")) { buildOutputPanel(); ImGui::EndTabItem(); }
@@ -693,7 +724,137 @@ private:
         ImGui::End();
     }
 
+    void ensureTilemapEnabled() {
+        if (!scene_.tilemap.enabled) {
+            scene_.tilemap.enabled = true;
+            scene_.tilemap.name = "Tilemap_World";
+            scene_.tilemap.blockSize = 32;
+            scene_.tilemap.resize(64, 36, 0);
+        } else if (scene_.tilemap.cells.empty()) {
+            scene_.tilemap.resize(scene_.tilemap.width, scene_.tilemap.height, 0);
+        }
+    }
+
+    int ensureTileDefinition(const std::string& relTexture) {
+        ensureTilemapEnabled();
+        for (const auto& tile : scene_.tilemap.tiles)
+            if (tile.texture == relTexture) return tile.id;
+        int newId = 1;
+        for (const auto& tile : scene_.tilemap.tiles) newId = std::max(newId, tile.id + 1);
+        TileDefinition def;
+        def.id = newId;
+        def.texture = relTexture;
+        def.name = fs::path(relTexture).stem().string();
+        scene_.tilemap.tiles.push_back(def);
+        std::sort(scene_.tilemap.tiles.begin(), scene_.tilemap.tiles.end(), [](const TileDefinition& a, const TileDefinition& b) { return a.id < b.id; });
+        return newId;
+    }
+
+    const TileDefinition* selectedTileDefinition() const {
+        return scene_.tilemap.tileById(selectedTileId_);
+    }
+
+    void tilemapPanel() {
+        if (!scene_.tilemap.enabled) {
+            ImGui::TextWrapped("Create a Tilemap to store a 2D array of block IDs, and paint tiles directly into the scene.");
+            if (ImGui::Button("Create Tilemap")) {
+                ensureTilemapEnabled();
+                selectedId_ = kTilemapSelection;
+                selectedTileId_ = 0;
+                tilePaintMode_ = true;
+            }
+            return;
+        }
+        ImGui::Checkbox("Paint mode", &tilePaintMode_);
+        ImGui::SameLine();
+        ImGui::Checkbox("Eraser", &tileEraser_);
+        ImGui::SameLine();
+        if (ImGui::Button("Select Tilemap")) selectedId_ = kTilemapSelection;
+        ImGui::Separator();
+        if (ImGui::Selectable("0: Air", tileEraser_ || selectedTileId_ == 0)) {
+            selectedTileId_ = 0; tileEraser_ = true; tilePaintMode_ = true;
+        }
+        ImGui::TextUnformatted("Registered block types");
+        for (const auto& tile : scene_.tilemap.tiles) {
+            ImGui::PushID(tile.id);
+            if (ImGui::Selectable((std::to_string(tile.id) + ": " + tile.name).c_str(),
+                                  selectedTileId_ == tile.id && !tileEraser_)) {
+                selectedTileId_ = tile.id; tileEraser_ = false; tilePaintMode_ = true;
+            }
+            if (!tile.texture.empty()) {
+                if (const sf::Texture* tex = textures_.get(projectDir_ / tile.texture)) {
+                    ImGui::SameLine();
+                    const auto s = tex->getSize();
+                    const float factor = std::min(24.f/std::max(1u,s.x), 24.f/std::max(1u,s.y));
+                    ImGui::Image(*tex, {s.x * factor, s.y * factor});
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted("Add sprite texture as a block type");
+        const auto all = assetsIn(projectDir_);
+        if (all.empty()) ImGui::TextDisabled("Import a PNG under Assets first.");
+        int buttonIndex = 0;
+        for (const auto& path : all) {
+            const std::string rel = "assets/" + path.filename().string();
+            ImGui::PushID(buttonIndex);
+            if (ImGui::SmallButton(("+ " + path.filename().string()).c_str())) {
+                selectedTileId_ = ensureTileDefinition(rel);
+                tileEraser_ = false;
+                tilePaintMode_ = true;
+                selectedId_ = kTilemapSelection;
+            }
+            ImGui::PopID();
+            if (++buttonIndex % 3 != 0) ImGui::SameLine();
+        }
+        ImGui::Separator();
+        ImGui::Text("Hover: (%d, %d)", hoveredTile_.x, hoveredTile_.y);
+        if (scene_.tilemap.inBounds(hoveredTile_.x, hoveredTile_.y)) {
+            const int value = scene_.tilemap.get(hoveredTile_.x, hoveredTile_.y);
+            const auto* def = scene_.tilemap.tileById(value);
+            ImGui::Text("Array[y][x]: %d (%s)", value, def ? def->name.c_str() : "Air");
+        }
+        ImGui::TextUnformatted("Top-left array preview (rows = y, columns = x)");
+        std::ostringstream preview;
+        const int rows = std::min(8, scene_.tilemap.height);
+        const int cols = std::min(14, scene_.tilemap.width);
+        for (int y = 0; y < rows; ++y) {
+            for (int x = 0; x < cols; ++x) preview << scene_.tilemap.get(x, y) << ' ';
+            preview << '\n';
+        }
+        ImGui::TextUnformatted(preview.str().c_str());
+        ImGui::TextWrapped("Left-drag to paint, right-drag to erase, middle-drag to pan; turn off Paint Tiles to select and move sprites.");
+    }
+
     void inspector() {
+        if (selectedId_ == kTilemapSelection) {
+            ensureTilemapEnabled();
+            drawPanelTitle("Tilemap properties");
+            char tmName[128] = {};
+            std::strncpy(tmName, scene_.tilemap.name.c_str(), sizeof(tmName)-1);
+            if (ImGui::InputText("Name", tmName, sizeof(tmName))) scene_.tilemap.name = tmName;
+            int dimensions[] = {scene_.tilemap.width, scene_.tilemap.height};
+            if (ImGui::InputInt2("Array Size", dimensions)) {
+                dimensions[0] = std::clamp(dimensions[0], 1, 4096);
+                dimensions[1] = std::clamp(dimensions[1], 1, 4096);
+                scene_.tilemap.resize(dimensions[0], dimensions[1], 0);
+            }
+            int blockSize = scene_.tilemap.blockSize;
+            if (ImGui::InputInt("Block Size", &blockSize)) scene_.tilemap.blockSize = std::clamp(blockSize, 4, 256);
+            ImGui::TextDisabled("To remove the Tilemap, select it and click Delete in Hierarchy.");
+            ImGui::Checkbox("Paint mode", &tilePaintMode_);
+            ImGui::Text("Tiles: %d", static_cast<int>(scene_.tilemap.tiles.size()));
+            ImGui::Text("Array cells: %d", static_cast<int>(scene_.tilemap.cells.size()));
+            if (selectedTileId_ != 0) {
+                if (const auto* def = selectedTileDefinition()) ImGui::Text("Selected tile: %d (%s)", def->id, def->name.c_str());
+            } else {
+                ImGui::Text("Selected tile: Air / Erase");
+            }
+            ImGui::Separator();
+            ImGui::TextWrapped("Use the Tilemap tab below to choose tile textures and paint directly into the 2D array.");
+            return;
+        }
         Object* obj = scene_.find(selectedId_);
         if (!obj) {
             drawPanelTitle("Scene properties");
@@ -710,7 +871,8 @@ private:
                 scene_.background = sf::Color(static_cast<std::uint8_t>(background[0]*255),
                                              static_cast<std::uint8_t>(background[1]*255),
                                              static_cast<std::uint8_t>(background[2]*255));
-            ImGui::TextWrapped("Select a sprite in the hierarchy or viewport to edit its properties.");
+            ImGui::Separator();
+            ImGui::TextWrapped("Select Scene, Tilemap_World, or a sprite in the hierarchy or viewport to edit its properties.");
             return;
         }
         drawPanelTitle("Sprite properties");
@@ -1000,6 +1162,7 @@ private:
         ImGui::EndChild();
     }
 
+
     void sceneViewport() {
         if (ImGui::Button("Play / Compile")) requestBuild(AfterBuild::Play);
         ImGui::SameLine();
@@ -1008,6 +1171,8 @@ private:
         if (ImGui::Button("Center")) camera_ = {scene_.width/2.f,scene_.height/2.f};
         ImGui::SameLine();
         if (ImGui::Button("1:1")) zoom_ = 1.f;
+        ImGui::SameLine();
+        ImGui::Checkbox("Paint Tiles", &tilePaintMode_);
         ImGui::SameLine();
         ImGui::TextDisabled("Zoom: %.0f%%   Middle-drag: pan", 100.f/zoom_);
         ImGui::SameLine();
@@ -1028,7 +1193,7 @@ private:
         viewport_.clear(active.background);
         drawScene(viewport_, active, projectDir_, textures_, selectedId_, grid_, zoom_);
         viewport_.display();
-        ImGui::Image(viewport_, {viewportW_,viewportH_}); // RenderTexture overload fixes vertical flipping.
+        ImGui::Image(viewport_, {viewportW_,viewportH_});
         const bool hovered = ImGui::IsItemHovered();
         const auto start = ImGui::GetItemRectMin();
         auto& io = ImGui::GetIO();
@@ -1036,6 +1201,11 @@ private:
             return {camera_.x + (mouse.x-start.x-viewportW_/2.f)*zoom_,
                     camera_.y + (mouse.y-start.y-viewportH_/2.f)*zoom_};
         };
+        auto screenFromWorld = [&](sf::Vector2f world) -> ImVec2 {
+            return {start.x + (world.x - camera_.x) / zoom_ + viewportW_ / 2.f,
+                    start.y + (world.y - camera_.y) / zoom_ + viewportH_ / 2.f};
+        };
+        hoveredTile_ = {-1, -1};
         if (hovered) {
             if (io.MouseWheel != 0.f) {
                 const sf::Vector2f before = worldAt(io.MousePos);
@@ -1047,16 +1217,38 @@ private:
                 camera_.x -= io.MouseDelta.x * zoom_;
                 camera_.y -= io.MouseDelta.y * zoom_;
             }
+            if (scene_.tilemap.enabled) {
+                const sf::Vector2f at = worldAt(io.MousePos);
+                hoveredTile_ = worldToTileCell(scene_.tilemap, at);
+                if (scene_.tilemap.inBounds(hoveredTile_.x, hoveredTile_.y)) {
+                    const auto bounds = tileCellBounds(scene_.tilemap, hoveredTile_.x, hoveredTile_.y);
+                    const ImVec2 p0 = screenFromWorld(bounds.position);
+                    const ImVec2 p1 = screenFromWorld({bounds.position.x + bounds.size.x, bounds.position.y + bounds.size.y});
+                    ImGui::GetWindowDrawList()->AddRect(p0, p1, IM_COL32(255, 215, 0, 220), 0.f, 0, 2.f);
+                }
+            }
         }
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            const sf::Vector2f at = worldAt(io.MousePos);
-            selectedId_ = findObjectAt(scene_, at, projectDir_, textures_);
-            draggingObject_ = selectedId_ >= 0;
-            if (auto* o = scene_.find(selectedId_)) objectDragOffset_ = o->position-at;
-        }
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) draggingObject_ = false;
-        if (draggingObject_ && hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-            if (auto* o = scene_.find(selectedId_)) o->position = worldAt(io.MousePos)+objectDragOffset_;
+
+        const bool tileEditing = scene_.tilemap.enabled && (tilePaintMode_ || selectedId_ == kTilemapSelection);
+        if (!builder_.busy() && hovered && tileEditing && scene_.tilemap.inBounds(hoveredTile_.x, hoveredTile_.y)) {
+            const int value = tileEraser_ ? 0 : selectedTileId_;
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+                scene_.tilemap.set(hoveredTile_.x, hoveredTile_.y, value);
+            }
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+                scene_.tilemap.set(hoveredTile_.x, hoveredTile_.y, 0);
+            }
+        } else if (!builder_.busy()) {
+            if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                const sf::Vector2f at = worldAt(io.MousePos);
+                selectedId_ = findObjectAt(scene_, at, projectDir_, textures_);
+                draggingObject_ = selectedId_ >= 0;
+                if (auto* o = scene_.find(selectedId_)) objectDragOffset_ = o->position-at;
+            }
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) draggingObject_ = false;
+            if (draggingObject_ && hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                if (auto* o = scene_.find(selectedId_)) o->position = worldAt(io.MousePos)+objectDragOffset_;
+            }
         }
         if (ImGui::BeginDragDropTarget()) {
             if (const auto* payload = ImGui::AcceptDragDropPayload("SPRITE_ASSET")) {

@@ -189,3 +189,46 @@ Steam integration is optional; unchecking it and building again produces an ordi
 ## Testing status
 
 The non-Steam SteamIntegration stub compiles with Linux g++ C++17. The Steam-enabled wrapper passes a C++17 syntax check against a **locally authored API-shaped test header, not Valve's real Steamworks SDK**. Windows + real Steamworks linking, overlay display, achievement unlocks and multiplayer connectivity have NOT been tested here. Validate these on your PC with the official SDK and your own Steamworks App ID.
+
+## 2D array tilemaps (v0.5 prototype)
+
+This version adds a **Tilemap_World** entry and a **Tilemap** tab to the editor. It is designed for grid-based worlds, such as a Terraria-like map, while keeping sprites, C++ behaviors, Steamworks options, and EXE export.
+
+### Using the editor
+
+1. Run `build_windows.bat` in the source root to rebuild the editor. The CMake post-build step copies the updated EngineCore into the game SDK.
+2. Open your game project. Select **Create Tilemap** in Hierarchy (or use the Tilemap tab).
+3. Select the **Tilemap_World** row in Hierarchy to edit array width, height and tile size in Inspector.
+4. Import a 16×16 or 32×32 tile PNG using **Assets**. In the **Tilemap** tab, click `+ filename.png` to register it as a numbered block type. The block ID is stable across saves; unused images don't automatically become block types.
+5. Select a block type and enable **Paint mode**, then **left-drag** across the scene to paint. **Right-drag** erases blocks (sets value `0`, air). Middle-drag pans and the mouse wheel zooms. Turn off **Paint Tiles** to select and drag ordinary sprites again.
+6. Press **File > Save scene**. The tilemap array and block type mappings are stored in `scene.json` version 2. Old version 1 files remain loadable. **Play / Compile** and **Export EXE** use the same tilemap in `GameRuntime.exe`.
+
+The first-install demo comes with an example grass/dirt/stone/ore world, plus five tile textures. Existing user projects are intentionally **not overwritten** by rebuilding the editor. If you already have a `Project/scene.json`, use Create Tilemap in that project, or open `sample_project` from the source ZIP as a separate project.
+
+### How the block array is represented in C++
+
+The world uses a flat `std::vector<int>` of length `width * height`, with row-major indexing. To read and write a cell from a compiled behavior:
+
+```cpp
+const int x = 10;
+const int y = 12;
+const int current = ctx.scene.tilemap.get(x, y);
+ctx.scene.tilemap.set(x, y, 2); // set dirt, if block ID 2 is defined
+ctx.scene.tilemap.set(x, y, 0); // remove block (air)
+```
+
+The behavior receives the scene via `forge::BehaviorContext`. You can also use `ctx.scene.tilemap.width`, `.height`, `.blockSize`, `.tiles`, or `.cells`. `resize()` preserves existing overlapping cells. The renderer draws the visible portion of the array with textures at the configured tile size. The tilemap renders behind ordinary SpriteForge objects.
+
+### What is not included yet
+
+- This is a **first functional tilemap** with visible-region culling, **not** an optimized Terraria-scale chunk/atlas renderer. Tiles are currently drawn individually; massive worlds need a vertex-array batched renderer and chunk management for performance.
+- No automatically applied block collisions, gravity, liquids, lighting, wiring, or procedural generation. C++ scripts can read/write tile IDs, but you need to program gameplay rules yourself.
+- One tilemap per scene, not separate foreground/background/wall layers. A tile definition stores ID, name, texture path and a `solid` flag (the latter is ready for future collision code).
+- The array panel shows a small, read-only preview; you paint in Scene View and configure settings in Inspector.
+- This release is source code; a full native Visual Studio / SFML 3 build was not available to test in the authoring environment.
+
+### Build and source compatibility
+
+You need **Visual Studio 2022**, **CMake 3.28+**, and **Git**. The first build downloads SFML 3.0.2, ImGui, and nlohmann/json via CMake. The optional Steamworks integration is retained; it is disabled by default and needs your own SDK/App ID to test.
+
+Back up your existing project before upgrading. The old `scene.json` format loads, while saving writes format version 2 with a `tilemap` object.

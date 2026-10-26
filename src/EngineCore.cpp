@@ -9,6 +9,40 @@
 namespace forge {
 using nlohmann::json;
 
+void TilemapData::resize(int newWidth, int newHeight, int fillValue) {
+    newWidth = std::clamp(newWidth, 1, 4096);
+    newHeight = std::clamp(newHeight, 1, 4096);
+    std::vector<int> next(static_cast<std::size_t>(newWidth) * static_cast<std::size_t>(newHeight), fillValue);
+    if (cells.size() == static_cast<std::size_t>(width) * static_cast<std::size_t>(height)) {
+        const int keepW = std::min(width, newWidth);
+        const int keepH = std::min(height, newHeight);
+        for (int y = 0; y < keepH; ++y) {
+            for (int x = 0; x < keepW; ++x)
+                next[static_cast<std::size_t>(y * newWidth + x)] = cells[static_cast<std::size_t>(y * width + x)];
+        }
+    }
+    width = newWidth;
+    height = newHeight;
+    cells = std::move(next);
+}
+
+bool TilemapData::inBounds(int x, int y) const { return x >= 0 && y >= 0 && x < width && y < height; }
+int TilemapData::index(int x, int y) const { return y * width + x; }
+int TilemapData::get(int x, int y) const {
+    if (!inBounds(x, y)) return 0;
+    const std::size_t at = static_cast<std::size_t>(index(x, y));
+    return at < cells.size() ? cells[at] : 0;
+}
+void TilemapData::set(int x, int y, int value) {
+    if (!inBounds(x, y)) return;
+    const std::size_t at = static_cast<std::size_t>(index(x, y));
+    if (at < cells.size()) cells[at] = value;
+}
+const TileDefinition* TilemapData::tileById(int id) const {
+    for (const auto& tile : tiles) if (tile.id == id) return &tile;
+    return nullptr;
+}
+
 Object& Scene::add(const std::string& name, const std::string& texture, sf::Vector2f position) {
     Object o;
     o.id = nextId++;
@@ -46,10 +80,19 @@ const sf::Texture* TextureCache::get(const fs::path& path) {
 void TextureCache::invalidate(const fs::path& path) { textures_.erase(path.lexically_normal().string()); }
 void TextureCache::clear() { textures_.clear(); }
 
+namespace {
+void validateAssetPath(const std::string& path) {
+    const fs::path asset = fs::path(path).lexically_normal();
+    if (asset.is_absolute() || asset.empty() || *asset.begin() != fs::path("assets") ||
+        path.find("..") != std::string::npos)
+        throw std::runtime_error("Scene contains invalid asset path");
+}
+}
+
 bool saveScene(const Scene& scene, const fs::path& path, std::string& error) {
     try {
         json j;
-        j["version"] = 1;
+        j["version"] = 2;
         j["title"] = scene.title;
         j["size"] = {scene.width, scene.height};
         j["background"] = {scene.background.r, scene.background.g, scene.background.b};
@@ -63,6 +106,20 @@ bool saveScene(const Scene& scene, const fs::path& path, std::string& error) {
                 {"moveSpeed", o.moveSpeed}, {"behavior", o.behavior},
                 {"behaviorValues", o.behaviorValues}
             });
+        }
+        if (scene.tilemap.enabled) {
+            json tm;
+            tm["enabled"] = true;
+            tm["name"] = scene.tilemap.name;
+            tm["width"] = scene.tilemap.width;
+            tm["height"] = scene.tilemap.height;
+            tm["blockSize"] = scene.tilemap.blockSize;
+            tm["cells"] = scene.tilemap.cells;
+            tm["tiles"] = json::array();
+            for (const auto& tile : scene.tilemap.tiles) {
+                tm["tiles"].push_back({{"id", tile.id}, {"name", tile.name}, {"texture", tile.texture}, {"solid", tile.solid}});
+            }
+            j["tilemap"] = std::move(tm);
         }
         fs::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary);
@@ -81,7 +138,8 @@ bool loadScene(Scene& scene, const fs::path& path, std::string& error) {
         std::ifstream in(path, std::ios::binary);
         if (!in) throw std::runtime_error("Cannot open " + path.string());
         const json j = json::parse(in);
-        if (j.value("version", 0) != 1) throw std::runtime_error("Unsupported scene version");
+        const int version = j.value("version", 1);
+        if (version != 1 && version != 2) throw std::runtime_error("Unsupported scene version");
         Scene loaded;
         loaded.title = j.value("title", "My Game");
         loaded.width = std::clamp(j.at("size").at(0).get<unsigned>(), 160u, 3840u);
@@ -96,12 +154,7 @@ bool loadScene(Scene& scene, const fs::path& path, std::string& error) {
             o.id = item.at("id").get<int>();
             o.name = item.value("name", "Sprite");
             o.texture = item.value("texture", "");
-            // Only load assets within the project tree.
-            const fs::path asset = fs::path(o.texture).lexically_normal();
-            if (asset.is_absolute() || asset.empty() ||
-                *asset.begin() != fs::path("assets") ||
-                o.texture.find("..") != std::string::npos)
-                throw std::runtime_error("Scene contains invalid asset path");
+            validateAssetPath(o.texture);
             o.position = {item.at("position").at(0).get<float>(), item.at("position").at(1).get<float>()};
             o.scale = {item.at("scale").at(0).get<float>(), item.at("scale").at(1).get<float>()};
             o.rotation = item.value("rotation", 0.f);
@@ -117,6 +170,30 @@ bool loadScene(Scene& scene, const fs::path& path, std::string& error) {
             loaded.objects.push_back(o);
             if (loaded.objects.size() > 10000) throw std::runtime_error("Too many objects");
         }
+        if (j.contains("tilemap")) {
+            const auto& tm = j.at("tilemap");
+            loaded.tilemap.enabled = tm.value("enabled", true);
+            loaded.tilemap.name = tm.value("name", std::string{"Tilemap_World"});
+            loaded.tilemap.width = std::clamp(tm.value("width", 64), 1, 4096);
+            loaded.tilemap.height = std::clamp(tm.value("height", 36), 1, 4096);
+            loaded.tilemap.blockSize = std::clamp(tm.value("blockSize", 32), 4, 256);
+            loaded.tilemap.cells = tm.value("cells", std::vector<int>{});
+            const std::size_t required = static_cast<std::size_t>(loaded.tilemap.width) * static_cast<std::size_t>(loaded.tilemap.height);
+            if (loaded.tilemap.cells.size() != required) loaded.tilemap.cells.assign(required, 0);
+            loaded.tilemap.tiles.clear();
+            if (tm.contains("tiles")) {
+                for (const auto& item : tm.at("tiles")) {
+                    TileDefinition t;
+                    t.id = item.value("id", 0);
+                    t.name = item.value("name", std::string{});
+                    t.texture = item.value("texture", std::string{});
+                    t.solid = item.value("solid", true);
+                    if (t.id < 0 || t.id > 1000000) throw std::runtime_error("Invalid tile ID");
+                    if (t.id != 0) validateAssetPath(t.texture);
+                    loaded.tilemap.tiles.push_back(std::move(t));
+                }
+            }
+        }
         scene = std::move(loaded);
         error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
@@ -130,13 +207,61 @@ static sf::Sprite configureSprite(const Object& o, const sf::Texture& texture) {
     return sprite;
 }
 
+sf::Vector2i worldToTileCell(const TilemapData& tilemap, sf::Vector2f world) {
+    if (!tilemap.enabled || tilemap.blockSize <= 0) return {-1, -1};
+    return {static_cast<int>(std::floor(world.x / tilemap.blockSize)),
+            static_cast<int>(std::floor(world.y / tilemap.blockSize))};
+}
+
+sf::FloatRect tileCellBounds(const TilemapData& tilemap, int x, int y) {
+    return {{static_cast<float>(x * tilemap.blockSize), static_cast<float>(y * tilemap.blockSize)},
+            {static_cast<float>(tilemap.blockSize), static_cast<float>(tilemap.blockSize)}};
+}
+
 void drawScene(sf::RenderTarget& target, const Scene& scene, const fs::path& root,
                TextureCache& textures, int selectedId, bool grid, float pixelScale) {
+    if (scene.tilemap.enabled && scene.tilemap.blockSize > 0) {
+        const sf::View view = target.getView();
+        const auto size = view.getSize();
+        const auto ctr = view.getCenter();
+        const float leftF = ctr.x - size.x / 2.f;
+        const float topF = ctr.y - size.y / 2.f;
+        const float rightF = ctr.x + size.x / 2.f;
+        const float bottomF = ctr.y + size.y / 2.f;
+        const int left = std::max(0, static_cast<int>(std::floor(leftF / scene.tilemap.blockSize)) - 1);
+        const int top = std::max(0, static_cast<int>(std::floor(topF / scene.tilemap.blockSize)) - 1);
+        const int right = std::min(scene.tilemap.width - 1, static_cast<int>(std::ceil(rightF / scene.tilemap.blockSize)) + 1);
+        const int bottom = std::min(scene.tilemap.height - 1, static_cast<int>(std::ceil(bottomF / scene.tilemap.blockSize)) + 1);
+        for (int y = top; y <= bottom; ++y) {
+            for (int x = left; x <= right; ++x) {
+                const int id = scene.tilemap.get(x, y);
+                if (id == 0) continue;
+                const TileDefinition* def = scene.tilemap.tileById(id);
+                if (!def || def->texture.empty()) continue;
+                if (const sf::Texture* tex = textures.get(root / def->texture)) {
+                    sf::Sprite sprite(*tex);
+                    sprite.setPosition({static_cast<float>(x * scene.tilemap.blockSize), static_cast<float>(y * scene.tilemap.blockSize)});
+                    const auto ts = tex->getSize();
+                    if (ts.x > 0 && ts.y > 0) sprite.setScale({scene.tilemap.blockSize / static_cast<float>(ts.x), scene.tilemap.blockSize / static_cast<float>(ts.y)});
+                    target.draw(sprite);
+                }
+            }
+        }
+        if (selectedId == -2) {
+            sf::RectangleShape outline({static_cast<float>(scene.tilemap.width * scene.tilemap.blockSize), static_cast<float>(scene.tilemap.height * scene.tilemap.blockSize)});
+            outline.setFillColor(sf::Color::Transparent);
+            outline.setOutlineColor(sf::Color(102, 202, 255, 180));
+            outline.setOutlineThickness(2.f * pixelScale);
+            target.draw(outline);
+        }
+    }
+
     if (grid) {
         const sf::View view = target.getView();
         const auto size = view.getSize();
         const auto ctr = view.getCenter();
-        constexpr int step = 64;
+        int step = 64;
+        if (scene.tilemap.enabled && scene.tilemap.blockSize > 0) step = scene.tilemap.blockSize;
         const int left = static_cast<int>(std::floor((ctr.x-size.x/2.f)/step))*step;
         const int top = static_cast<int>(std::floor((ctr.y-size.y/2.f)/step))*step;
         for (int x = left; x < ctr.x + size.x/2.f; x += step) {

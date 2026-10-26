@@ -10,6 +10,30 @@
 namespace forge {
 namespace fs = std::filesystem;
 
+struct TileDefinition {
+    int id = 0;
+    std::string name;
+    std::string texture; // relative to project root, usually assets/*.png
+    bool solid = true;
+};
+
+struct TilemapData {
+    bool enabled = false;
+    std::string name = "Tilemap_World";
+    int width = 64;
+    int height = 36;
+    int blockSize = 32;
+    std::vector<int> cells;
+    std::vector<TileDefinition> tiles;
+
+    void resize(int newWidth, int newHeight, int fillValue = 0);
+    bool inBounds(int x, int y) const;
+    int index(int x, int y) const;
+    int get(int x, int y) const;
+    void set(int x, int y, int value);
+    const TileDefinition* tileById(int id) const;
+};
+
 struct Object {
     int id = 0;
     std::string name = "Sprite";
@@ -31,6 +55,7 @@ struct Scene {
     unsigned height = 540;
     sf::Color background{38, 43, 59};
     std::vector<Object> objects;
+    TilemapData tilemap;
     int nextId = 1;
 
     Object& add(const std::string& name, const std::string& texture, sf::Vector2f position);
@@ -59,6 +84,9 @@ void drawScene(sf::RenderTarget& target, const Scene& scene,
 // Screen/world hit testing respects sprite scale and rotation.
 int findObjectAt(const Scene& scene, sf::Vector2f point,
                  const fs::path& projectRoot, TextureCache& textures);
+
+sf::Vector2i worldToTileCell(const TilemapData& tilemap, sf::Vector2f world);
+sf::FloatRect tileCellBounds(const TilemapData& tilemap, int x, int y);
 
 // A basic game behavior for the first engine version: WASD / arrows.
 void updatePlayerControls(Scene& scene, float dt, bool left, bool right, bool up, bool down);
