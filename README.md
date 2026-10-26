@@ -1,3 +1,32 @@
+# SpriteForge 2D v0.7 — Workbench Layout & Editable Tile Data
+
+This version reorganizes the existing SFML/ImGui desktop editor around the tilemap workspace, using the latest mockup as its layout reference. **This is a source update, not a verified Windows binary.**
+
+## Updated editor controls
+
+- **Assets header:** the small `v` / `>` control collapses and reopens the Assets panel. When collapsed, the **Physics** panel below grows into the freed space. The adjacent **+** opens an actual creation menu (import an image, create a bitmap font, or add a sprite).
+- **Assets / Sprites** dropdown switches between imported sprite images and **Assets / Bitmap Fonts**. The Grid/List buttons switch thumbnail layouts. Clicking a saved font in the font list opens it for editing.
+- **Icon toolbar:** Play, Compile, Stop Game, Center and Export show small vector-drawn icons. Zoom and Grid have functional selectors; Show Grid and Show Colliders toggle their visuals. Panning still works with either middle-button dragging or Shift+left-button dragging.
+- **Array / World Data:** the 2D tile IDs appear in a fixed-width, clickable ImGui table, with real row/column headers. Clicking a cell paints the selected block; right-clicking it erases. Array View, Block Info and Chunk Data are functional tabs, and Code/Build Output/Steam remain accessible in the same tab bar.
+- **Tile Palette:** texture thumbnails, per-layer selection, Paint, Rectangle Fill, Eyedropper, and Erase use working tool actions. Selected tools are highlighted.
+- **Physics:** world gravity and fixed-step settings are on the lower left when the scene/tilemap is selected. Selecting a sprite displays its body type, mass, velocity, acceleration, drag, restitution and collision toggles. The full advanced physics settings also remain in the sprite Inspector.
+- **Font Editor:** a compact glyph selector now lives between Array Data and Tile Palette; **Create Font** and **Edit glyphs** open the complete interactive bitmap glyph editor, where users draw and save JSON bitmap fonts or export PNG atlases.
+- **Tilemap Inspector:** storage/render mode menus identify the current supported backends; chunk-size options update tilemap metadata and solid/pass-through collision updates the tile definitions. Texture atlas packing and chunk streaming have not been implemented; the renderer currently batches visible tiles by texture.
+
+No game physics, Steam SDK behavior or data format was intentionally changed by this layout work. The optional editor grid step is a display-only setting (8–128 px). By default, the game still uses a 1/240-second fixed simulation step and a 480 FPS rendering cap.
+
+### Build
+
+```powershell
+# Run in the repository root on Windows with Visual Studio 2022 + CMake on PATH
+git pull origin main
+.\build_windows.bat
+```
+
+**Verification:** The source changes were reviewed and the existing C++17 physics smoke test passed. Full SFML/ImGui/MSVC compilation and interactive layout testing have not been verified in this environment.
+
+---
+
 # SpriteForge 2D v0.6 — Tilemaps, Fixed-Step Physics & Pixel Fonts
 
 This edition adds an expanded dark-blue editor layout, scene physics, and a bitmap font editor while retaining the existing visual scene editor, independent C++ game builds, and optional Steamworks integration.

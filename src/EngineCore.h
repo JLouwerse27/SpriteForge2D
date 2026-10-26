@@ -100,7 +100,7 @@ bool loadScene(Scene& scene, const fs::path& path, std::string& error);
 // Draw in scene units. Caller chooses the target's view.
 void drawScene(sf::RenderTarget& target, const Scene& scene,
                const fs::path& projectRoot, TextureCache& textures,
-               int selectedId = -1, bool drawGrid = false, float pixelScale = 1.f);
+               int selectedId = -1, bool drawGrid = false, float pixelScale = 1.f, int gridStep = 0);
 
 // Screen/world hit testing respects sprite scale and rotation.
 int findObjectAt(const Scene& scene, sf::Vector2f point,

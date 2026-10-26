@@ -325,7 +325,7 @@ std::map<std::string, BitmapFont>& bitmapFontCache() {
 void clearLoadedBitmapFonts() { bitmapFontCache().clear(); }
 
 void drawScene(sf::RenderTarget& target, const Scene& scene, const fs::path& root,
-               TextureCache& textures, int selectedId, bool grid, float pixelScale) {
+               TextureCache& textures, int selectedId, bool grid, float pixelScale, int gridStep) {
     if (scene.tilemap.enabled && scene.tilemap.blockSize > 0) {
         const sf::View view = target.getView();
         const auto size = view.getSize();
@@ -382,8 +382,8 @@ void drawScene(sf::RenderTarget& target, const Scene& scene, const fs::path& roo
         const sf::View view = target.getView();
         const auto size = view.getSize();
         const auto ctr = view.getCenter();
-        int step = 64;
-        if (scene.tilemap.enabled && scene.tilemap.blockSize > 0) step = scene.tilemap.blockSize;
+        int step = gridStep > 0 ? gridStep : 64;
+        if (gridStep <= 0 && scene.tilemap.enabled && scene.tilemap.blockSize > 0) step = scene.tilemap.blockSize;
         const int left = static_cast<int>(std::floor((ctr.x-size.x/2.f)/step))*step;
         const int top = static_cast<int>(std::floor((ctr.y-size.y/2.f)/step))*step;
         for (int x = left; x < ctr.x + size.x/2.f; x += step) {

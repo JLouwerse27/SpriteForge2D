@@ -137,6 +137,39 @@ void drawPanelTitle(const char* title) {
     ImGui::Separator();
 }
 
+enum class UiGlyph { Play, Stop, Compile, Center, Paint, Rect, Pick, Erase, Add, Folder };
+
+// Draw icons as ImGui vector primitives; no external icon font is necessary.
+// The invisible leading spaces are part of the button label, not a second widget.
+bool glyphButton(const char* label, UiGlyph glyph, ImVec2 size = {0.f, 0.f}, bool active = false) {
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.08f, .36f, .68f, 1.f));
+    const std::string visible = std::string("      ") + label;
+    const bool clicked = ImGui::Button(visible.c_str(), size);
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    const ImVec2 c(a.x + 14.f, (a.y + b.y) * .5f);
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImU32 color = glyph == UiGlyph::Play ? IM_COL32(64,222,130,255)
+                      : glyph == UiGlyph::Stop ? IM_COL32(250,105,110,255)
+                      : IM_COL32(225,238,255,255);
+    switch (glyph) {
+    case UiGlyph::Play: draw->AddTriangleFilled({c.x-4,c.y-6},{c.x+6,c.y},{c.x-4,c.y+6},color); break;
+    case UiGlyph::Stop: draw->AddRectFilled({c.x-5,c.y-5},{c.x+5,c.y+5},color); break;
+    case UiGlyph::Compile:
+        draw->AddCircle(c,5.f,color,0,2.f);
+        for(int i=0;i<8;++i){const float ang=i*3.14159265f/4.f;draw->AddLine({c.x+7.f*std::cos(ang),c.y+7.f*std::sin(ang)}, {c.x+9.f*std::cos(ang),c.y+9.f*std::sin(ang)},color,2.f);}
+        break;
+    case UiGlyph::Center: draw->AddCircle(c,5.f,color,0,1.5f);draw->AddLine({c.x-8,c.y},{c.x+8,c.y},color);draw->AddLine({c.x,c.y-8},{c.x,c.y+8},color); break;
+    case UiGlyph::Paint: draw->AddLine({c.x-5,c.y+5},{c.x+4,c.y-4},color,3.f); draw->AddCircleFilled({c.x+4,c.y-4},2.f,color); break;
+    case UiGlyph::Rect: draw->AddRect({c.x-6,c.y-5},{c.x+6,c.y+5},color,0.f,0,2.f); break;
+    case UiGlyph::Pick: draw->AddLine({c.x-5,c.y+5},{c.x+6,c.y-6},color,2.f);draw->AddCircle({c.x+4,c.y-4},3.f,color,0,1.5f); break;
+    case UiGlyph::Erase: draw->AddRectFilled({c.x-5,c.y-4},{c.x+4,c.y+4},color);draw->AddLine({c.x-7,c.y+6},{c.x+6,c.y+6},color,1.5f);break;
+    case UiGlyph::Add: draw->AddLine({c.x-5,c.y},{c.x+5,c.y},color,2.f);draw->AddLine({c.x,c.y-5},{c.x,c.y+5},color,2.f);break;
+    case UiGlyph::Folder: draw->AddRect({c.x-7,c.y-4},{c.x+7,c.y+5},color);draw->AddLine({c.x-7,c.y-5},{c.x-1,c.y-5},color);break;
+    }
+    if(active) ImGui::PopStyleColor();
+    return clicked;
+}
+
 class EditorApp {
     sf::RenderWindow window_;
     sf::RenderTexture viewport_{{800u, 450u}};
@@ -199,6 +232,14 @@ class EditorApp {
     sf::Vector2f inspectorForce_{0.f,0.f};
     float inspectorTorque_ = 0.f;
     bool fontEditorVisible_ = true;
+    bool fontGlyphWindowOpen_ = false;
+    bool assetsExpanded_ = true;
+    int assetCategory_ = 0; // 0 sprites, 1 bitmap fonts
+    bool assetsGridView_ = true;
+    bool arrayFollowCursor_ = true;
+    int arrayFirstX_ = 0;
+    int arrayFirstY_ = 0;
+    int gridSizePreview_ = 16;
 
 public:
     EditorApp()
@@ -269,6 +310,11 @@ public:
             }
             menuBar();
             mainPanels();
+            if (fontGlyphWindowOpen_) {
+                ImGui::SetNextWindowSize(ImVec2(530.f, 670.f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Bitmap Font - Glyph Editor", &fontGlyphWindowOpen_)) fontPanel();
+                ImGui::End();
+            }
             if (showAbout_) {
                 ImGui::Begin("About SpriteForge", &showAbout_);
                 ImGui::TextWrapped("SpriteForge 2D is a minimal visual scene editor written with SFML 3 and Dear ImGui. Exported games run in a separate native Windows executable.");
@@ -811,122 +857,339 @@ private:
     }
 
     void arrayDataPanel() {
-        if(ImGui::BeginTabBar("WorldTabs")) {
-            if(ImGui::BeginTabItem("Array View")) {
-                if(!scene_.tilemap.enabled){ImGui::TextDisabled("Create a tilemap to see its 2D array.");}
+        if (ImGui::BeginTabBar("WorldTabs")) {
+            if (ImGui::BeginTabItem("Array View")) {
+                if (!scene_.tilemap.enabled) { ImGui::TextDisabled("Create a tilemap to inspect its cells."); }
                 else {
-                    const auto& tm=scene_.tilemap;
-                    ImGui::BeginChild("ArrayGrid",ImVec2(ImGui::GetContentRegionAvail().x*.60f,0),true,ImGuiWindowFlags_HorizontalScrollbar);
-                    const int firstX=std::clamp(hoveredTile_.x>=0?hoveredTile_.x-4:0,0,std::max(0,tm.width-1));
-                    const int firstY=std::clamp(hoveredTile_.y>=0?hoveredTile_.y-4:0,0,std::max(0,tm.height-1));
-                    for(int y=firstY;y<std::min(tm.height,firstY+12);++y){
-                        for(int x=firstX;x<std::min(tm.width,firstX+16);++x){
-                            ImGui::PushID(y*tm.width+x);
-                            ImGui::Text("%d",tm.getLayer(tileLayer_,x,y));
-                            if(x+1<std::min(tm.width,firstX+16))ImGui::SameLine(0.f,11.f);
-                            ImGui::PopID();
+                    const auto& tm = scene_.tilemap;
+                    if (arrayFollowCursor_ && tm.inBounds(hoveredTile_.x, hoveredTile_.y)) {
+                        arrayFirstX_ = std::clamp(hoveredTile_.x - 4, 0, std::max(0,tm.width - 1));
+                        arrayFirstY_ = std::clamp(hoveredTile_.y - 4, 0, std::max(0,tm.height - 1));
+                    }
+                    if (ImGui::BeginChild("##ArrayCells",ImVec2(ImGui::GetContentRegionAvail().x * .63f, 0.f),true,ImGuiWindowFlags_HorizontalScrollbar)) {
+                        const int ncols = std::min(10, tm.width-arrayFirstX_);
+                        const int nrows = std::min(12, tm.height-arrayFirstY_);
+                        const auto flags=ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_BordersInnerH|
+                                         ImGuiTableFlags_RowBg|ImGuiTableFlags_SizingFixedFit|
+                                         ImGuiTableFlags_ScrollY;
+                        if (ImGui::BeginTable("TileArray",ncols+1,flags,ImVec2(0.f,0.f))) {
+                            ImGui::TableSetupColumn("Y/X",ImGuiTableColumnFlags_WidthFixed,38.f);
+                            for (int x=0; x<ncols; ++x) {
+                                const std::string col=std::to_string(arrayFirstX_+x);
+                                ImGui::TableSetupColumn(col.c_str(),ImGuiTableColumnFlags_WidthFixed,27.f);
+                            }
+                            ImGui::TableSetupScrollFreeze(1,1);
+                            ImGui::TableHeadersRow();
+                            for(int y=0;y<nrows;++y) {
+                                const int row=arrayFirstY_+y;
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);ImGui::Text("%d",row);
+                                for(int x=0;x<ncols;++x) {
+                                    const int col=arrayFirstX_+x;
+                                    const int value=tm.getLayer(tileLayer_,col,row);
+                                    ImGui::TableSetColumnIndex(x+1);
+                                    ImGui::PushID(row*tm.width+col);
+                                    const bool selected=hoveredTile_.x==col&&hoveredTile_.y==row;
+                                    if(selected)ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg,IM_COL32(24,94,157,150));
+                                    const std::string label=std::to_string(value);
+                                    if(ImGui::Selectable(label.c_str(),selected,ImGuiSelectableFlags_None,ImVec2(-FLT_MIN,0))) {
+                                        selectedId_=kTilemapSelection;tilePaintMode_=true;
+                                        scene_.tilemap.setLayer(tileLayer_,col,row,selectedTileId_);
+                                    }
+                                    if(ImGui::IsItemClicked(ImGuiMouseButton_Right))scene_.tilemap.setLayer(tileLayer_,col,row,0);
+                                    ImGui::PopID();
+                                }
+                            }
+                            ImGui::EndTable();
                         }
                     }
                     ImGui::EndChild();ImGui::SameLine();
-                    ImGui::BeginChild("ArrayStats",ImVec2(0,0),false);
+                    ImGui::BeginChild("ArrayStats",ImVec2(0,0),true);
                     ImGui::Text("Layer: %d",tileLayer_);
-                    ImGui::Text("Cursor: (%d, %d)",hoveredTile_.x,hoveredTile_.y);
-                    if(tm.inBounds(hoveredTile_.x,hoveredTile_.y)) ImGui::Text("Value: %d",tm.getLayer(tileLayer_,hoveredTile_.x,hoveredTile_.y));
+                    ImGui::Text("Cursor: %d, %d",hoveredTile_.x,hoveredTile_.y);
+                    if(tm.inBounds(hoveredTile_.x,hoveredTile_.y)) {
+                        const int val=tm.getLayer(tileLayer_,hoveredTile_.x,hoveredTile_.y);
+                        const auto* def=tm.tileById(val);
+                        ImGui::Text("Block: %d (%s)",val,def?def->name.c_str():"Air");
+                        ImGui::Text("Index: [%d][%d]",hoveredTile_.y,hoveredTile_.x);
+                        ImGui::Text("Chunk: (%d, %d)", hoveredTile_.x/std::max(1,tm.chunkSize),hoveredTile_.y/std::max(1,tm.chunkSize));
+                    }
                     ImGui::Text("World: %d x %d",tm.width,tm.height);
-                    ImGui::Text("Block: %dpx",tm.blockSize);
+                    ImGui::Text("Tile size: %d px",tm.blockSize);
                     ImGui::Text("Cells: %zu",tm.cells.size());
+                    ImGui::Checkbox("Follow cursor",&arrayFollowCursor_);
+                    if(!arrayFollowCursor_) {
+                        ImGui::SetNextItemWidth(85.f);ImGui::InputInt("From X",&arrayFirstX_);
+                        ImGui::SetNextItemWidth(85.f);ImGui::InputInt("From Y",&arrayFirstY_);
+                        arrayFirstX_=std::clamp(arrayFirstX_,0,std::max(0,tm.width-1));
+                        arrayFirstY_=std::clamp(arrayFirstY_,0,std::max(0,tm.height-1));
+                    }
                     ImGui::EndChild();
                 }
                 ImGui::EndTabItem();
             }
-            if(ImGui::BeginTabItem("Code")) {codePanel(); ImGui::EndTabItem();}
-            if(ImGui::BeginTabItem("Build Output")){buildOutputPanel();ImGui::EndTabItem();}
-            if(ImGui::BeginTabItem("Steam")){steamPanel();ImGui::EndTabItem();}
+            if(ImGui::BeginTabItem("Block Info")) {
+                if(scene_.tilemap.enabled) {
+                    const auto& tm=scene_.tilemap;
+                    ImGui::Text("Layer %d, selected tile ID %d",tileLayer_,selectedTileId_);
+                    if(const auto* def=tm.tileById(selectedTileId_)) {
+                        ImGui::Text("Name: %s",def->name.c_str());
+                        ImGui::Text("Texture: %s",def->texture.c_str());
+                        ImGui::Text("Solid: %s",def->solid?"yes":"no");
+                    }
+                    if(tm.inBounds(hoveredTile_.x,hoveredTile_.y)) {
+                        ImGui::Text("Hovered cell: [%d][%d]",hoveredTile_.y,hoveredTile_.x);
+                    }
+                } else ImGui::TextDisabled("No tilemap selected.");
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("Chunk Data")) {
+                if(scene_.tilemap.enabled) {
+                    const auto& tm=scene_.tilemap;
+                    const int cw=(tm.width+tm.chunkSize-1)/tm.chunkSize,ch=(tm.height+tm.chunkSize-1)/tm.chunkSize;
+                    ImGui::Text("Logical regions: %d x %d (%d total)",cw,ch,cw*ch);
+                    ImGui::Text("Chunk dimensions: %d x %d cells",tm.chunkSize,tm.chunkSize);
+                    ImGui::TextWrapped("Rendering batches visible tiles; disk chunk streaming is not yet implemented.");
+                }else ImGui::TextDisabled("No tilemap selected.");
+                ImGui::EndTabItem();
+            }
+            if(ImGui::BeginTabItem("Code")) {codePanel();ImGui::EndTabItem();}
+            if(ImGui::BeginTabItem("Build Output")) {buildOutputPanel();ImGui::EndTabItem();}
+            if(ImGui::BeginTabItem("Steam")) {steamPanel();ImGui::EndTabItem();}
             ImGui::EndTabBar();
         }
     }
 
     void tilePalettePanel() {
-        if(!scene_.tilemap.enabled){
-            ImGui::TextWrapped("Create a tilemap in Hierarchy to paint a block array.");
-            if(ImGui::Button("Create Tilemap")){ensureTilemapEnabled();selectedId_=kTilemapSelection;tilePaintMode_=true;}
+        if(!scene_.tilemap.enabled) {
+            ImGui::TextWrapped("Create a tilemap to paint a block array.");
+            if(glyphButton("Create Tilemap",UiGlyph::Add)) {ensureTilemapEnabled();selectedId_=kTilemapSelection;tilePaintMode_=true;}
             return;
         }
-        ImGui::Checkbox("Paint mode",&tilePaintMode_);
-        ImGui::SameLine();ImGui::Text("Selected ID %d",selectedTileId_);
-        ImGui::RadioButton("Layer 0",&tileLayer_,0);ImGui::SameLine();
-        ImGui::RadioButton("Layer 1",&tileLayer_,1);ImGui::SameLine();
-        ImGui::RadioButton("Layer 2",&tileLayer_,2);
-        if(ImGui::BeginTabBar("PaletteTabs")){
-            if(ImGui::BeginTabItem("Tiles")) {
-                if(ImGui::SmallButton("Air / Erase")){selectedTileId_=0;tileTool_=TileTool::Erase;tilePaintMode_=true;}
-                const auto assets=assetsIn(projectDir_);
-                int n=0;
-                for(const auto& path:assets){
+        if (ImGui::BeginTabBar("PaletteTabs")) {
+            if (ImGui::BeginTabItem("Tiles")) {
+                const auto all=assetsIn(projectDir_);
+                const float tileSide=std::clamp((ImGui::GetContentRegionAvail().x-30.f)/7.f,27.f,48.f);
+                const int perRow=std::max(1,(int)(ImGui::GetContentRegionAvail().x/(tileSide+6.f)));
+                if(ImGui::Button("Air##tile",{tileSide,tileSide})) {selectedTileId_=0;tileTool_=TileTool::Erase;tilePaintMode_=true;}
+                if (ImGui::IsItemHovered())ImGui::SetTooltip("Erase: ID 0");
+                ImGui::SameLine();
+                int n=1;
+                for(const auto& path:all) {
                     const auto* tex=textures_.get(path);if(!tex)continue;
                     const int id=ensureTileDefinition("assets/"+path.filename().string());
                     ImGui::PushID(id);
-                    const auto sz=tex->getSize();
-                    if(ImGui::ImageButton("##tile",*tex,{42.f,42.f})){
+                    if(ImGui::ImageButton("##Tile",*tex,{tileSide,tileSide})) {
                         selectedTileId_=id;tileTool_=TileTool::Paint;tilePaintMode_=true;
                     }
-                    if(ImGui::IsItemHovered())ImGui::SetTooltip("ID %d: %s",id,path.stem().string().c_str());
-                    if(++n%4!=0)ImGui::SameLine();
+                    if(ImGui::IsItemHovered())ImGui::SetTooltip("%d: %s",id,path.stem().string().c_str());
+                    if(++n%perRow!=0)ImGui::SameLine(0.f,4.f);
                     ImGui::PopID();
                 }
                 ImGui::EndTabItem();
             }
-            if(ImGui::BeginTabItem("Tools")){
-                int t=static_cast<int>(tileTool_);
-                ImGui::RadioButton("Paint",&t,0);ImGui::SameLine();ImGui::RadioButton("Erase",&t,1);
-                ImGui::RadioButton("Rectangle Fill",&t,2);ImGui::SameLine();ImGui::RadioButton("Eyedropper",&t,3);
-                tileTool_=static_cast<TileTool>(t);
+            if (ImGui::BeginTabItem("Tools")) {
                 ImGui::SliderInt("Brush size",&brushSize_,1,16);
-                ImGui::TextWrapped("Left-drag paint; right-click erase; Shift+left-drag or middle-drag to pan.");
+                ImGui::Checkbox("Paint enabled",&tilePaintMode_);
+                ImGui::TextWrapped("Shift+left-drag or middle-drag pans. Right-click erases.");
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
         }
         ImGui::Separator();
-        int t=static_cast<int>(tileTool_);
-        ImGui::RadioButton("Paint##quick",&t,0);ImGui::SameLine();ImGui::RadioButton("Erase##quick",&t,1);
-        ImGui::RadioButton("Fill##quick",&t,2);ImGui::SameLine();ImGui::RadioButton("Pick##quick",&t,3);
-        tileTool_=static_cast<TileTool>(t);
+        const float gap=ImGui::GetStyle().ItemSpacing.x;
+        const float width=std::max(58.f,(ImGui::GetContentRegionAvail().x-3.f*gap)/4.f);
+        auto action=[&](const char* text,UiGlyph glyph,TileTool tool) {
+            if(glyphButton(text,glyph,{width,34.f},tileTool_==tool)) {tileTool_=tool;tilePaintMode_=true;}
+        };
+        action("Paint",UiGlyph::Paint,TileTool::Paint);ImGui::SameLine();
+        action("Fill",UiGlyph::Rect,TileTool::Rectangle);ImGui::SameLine();
+        action("Pick",UiGlyph::Pick,TileTool::Eyedropper);ImGui::SameLine();
+        action("Erase",UiGlyph::Erase,TileTool::Erase);
+        ImGui::SetNextItemWidth(95.f);ImGui::Combo("Layer",&tileLayer_,"Layer 0\0Layer 1\0Layer 2\0");
+        ImGui::SameLine();ImGui::SetNextItemWidth(95.f);ImGui::SliderInt("Brush",&brushSize_,1,16);
+        ImGui::TextDisabled("Selected block: %d",selectedTileId_);
+    }
+
+    void toolbar() {
+        if(glyphButton("Play",UiGlyph::Play,{95.f,27.f}))requestBuild(AfterBuild::Play);
+        ImGui::SameLine();
+        if(glyphButton("Compile",UiGlyph::Compile,{115.f,27.f}))requestBuild();
+        ImGui::SameLine();
+        if(glyphButton("Stop Game",UiGlyph::Stop,{123.f,27.f}))stopGame();
+        ImGui::SameLine();
+        if(glyphButton("Center",UiGlyph::Center,{105.f,27.f}))camera_={scene_.width*.5f,scene_.height*.5f};
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(95.f);
+        const char* zoomNames[]={"50%","75%","100%","150%","200%","300%","400%","600%"};
+        const float zoomValues[]={2.f,1.3333333f,1.f,.6666667f,.5f,.3333333f,.25f,.1666667f};
+        int chosen=2;
+        float best=999.f;
+        for(int i=0;i<8;++i){const float diff=std::abs(zoom_-zoomValues[i]);if(diff<best){best=diff;chosen=i;}}
+        if(ImGui::Combo("Zoom",&chosen,zoomNames,8))zoom_=zoomValues[chosen];
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(83.f);
+        const int options[]={8,16,32,64,128};
+        int chosenGrid=1;
+        for(int i=0;i<5;++i)if(options[i]==gridSizePreview_)chosenGrid=i;
+        const char* gridNames[]={"8 px","16 px","32 px","64 px","128 px"};
+        if(ImGui::Combo("Grid",&chosenGrid,gridNames,5))gridSizePreview_=options[chosenGrid];
+        ImGui::SameLine();ImGui::Checkbox("Show Grid",&grid_);
+        ImGui::SameLine();ImGui::Checkbox("Show Colliders",&showColliders_);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Pan: MMB / Shift+LMB");
+        ImGui::SameLine();
+        if(glyphButton("Export",UiGlyph::Folder,{86.f,27.f}))exportGame();
+    }
+
+    void assetsPanel() {
+        ImGui::TextUnformatted("Assets");
+        const float right=ImGui::GetWindowContentRegionMax().x;
+        ImGui::SameLine(right-67.f);
+        if(ImGui::SmallButton(assetsExpanded_?"v##assetcollapse":">##assetcollapse"))assetsExpanded_=!assetsExpanded_;
+        ImGui::SameLine(right-38.f);
+        if(ImGui::SmallButton("+##assetcreate"))ImGui::OpenPopup("NewAssetMenu");
+        if(ImGui::BeginPopup("NewAssetMenu")){
+            if(ImGui::MenuItem("Import PNG / JPG..."))importImage();
+            if(ImGui::MenuItem("New bitmap font...")){
+                font_.reset(8,8);fontDirty_=true;fontGlyphWindowOpen_=true;fontEditorVisible_=true;
+            }
+            if(ImGui::MenuItem("Add sprite to scene")){
+                const auto files=assetsIn(projectDir_);
+                if(!files.empty())addSprite("assets/"+files.front().filename().string(),camera_);
+                else notify("Import an image before adding a sprite.");
+            }
+            ImGui::EndPopup();
+        }
+        if(!assetsExpanded_) {
+            ImGui::TextDisabled("Assets hidden. Click > to expand.");
+            return;
+        }
+        const char* categories[]={"Assets / Sprites","Assets / Bitmap Fonts"};
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x-66.f);
+        ImGui::Combo("##AssetsCategory",&assetCategory_,categories,2);
+        ImGui::SameLine();
+        if(ImGui::SmallButton("Grid"))assetsGridView_=true;
+        ImGui::SameLine();
+        if(ImGui::SmallButton("List"))assetsGridView_=false;
+        ImGui::Separator();
+        if(assetCategory_==0)assetBrowser();
+        else {
+            const fs::path fontsDir=projectDir_/"assets"/"fonts";
+            bool found=false;
+            if(fs::exists(fontsDir))for(const auto& entry:fs::directory_iterator(fontsDir)) {
+                if(!entry.is_regular_file() || entry.path().extension()!=".json")continue;
+                found=true;
+                const std::string filename=entry.path().filename().string();
+                if(ImGui::Selectable(filename.c_str())) {
+                    BitmapFont loaded;std::string err;
+                    if(loadBitmapFont(loaded,entry.path(),err)) {
+                        font_=std::move(loaded);
+                        const std::string stem=filename.substr(0,filename.find(".sffont.json"));
+                        std::strncpy(fontFileName_,stem.c_str(),sizeof(fontFileName_)-1);fontFileName_[sizeof(fontFileName_)-1]=0;
+                        std::strncpy(fontName_,font_.name.c_str(),sizeof(fontName_)-1);fontName_[sizeof(fontName_)-1]=0;
+                        fontDirty_=false;fontGlyphWindowOpen_=true;fontEditorVisible_=true;
+                    } else notify(err);
+                }
+            }
+            if(!found)ImGui::TextDisabled("No bitmap fonts. Use + > New bitmap font.");
+        }
+    }
+
+    void physicsSidebar() {
+        if(ImGui::CollapsingHeader("Physics",ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("Newtonian simulation");
+            if(Object* obj=scene_.find(selectedId_)) {
+                PhysicsBody& b=obj->physics;
+                ImGui::Checkbox("Enable Physics",&b.enabled);
+                const char* kinds[]={"Static","Dynamic","Kinematic"};int type=(int)b.type;
+                if(ImGui::Combo("Body type",&type,kinds,3))b.type=(BodyType)type;
+                ImGui::DragFloat("Mass",&b.mass,.1f,.001f,100000.f);
+                ImGui::DragFloat2("Velocity",&b.velocity.x,1.f);
+                ImGui::DragFloat2("Acceleration",&b.acceleration.x,1.f);
+                ImGui::DragFloat("Linear Drag",&b.linearDrag,.02f,0.f,100.f);
+                ImGui::DragFloat("Angular Drag",&b.angularDrag,.02f,0.f,100.f);
+                ImGui::SliderFloat("Restitution",&b.restitution,0.f,1.f);
+                ImGui::Checkbox("Tile collisions",&b.collideWithTiles);
+                ImGui::Checkbox("Object collisions",&b.collideWithBodies);
+            } else {
+                ImGui::TextWrapped("World settings (select a sprite to edit its body)");
+                ImGui::DragFloat2("Gravity",&scene_.physics.gravity.x,2.f);
+                ImGui::InputInt("Fixed simulation Hz",&scene_.physics.fixedHz);
+                scene_.physics.fixedHz=std::clamp(scene_.physics.fixedHz,30,480);
+                ImGui::InputInt("Maximum FPS",&scene_.physics.maxRenderFps);
+                scene_.physics.maxRenderFps=std::clamp(scene_.physics.maxRenderFps,30,1000);
+                ImGui::TextDisabled("Default: 240 physics Hz / 480 FPS cap");
+            }
+        }
+    }
+
+    void compactFontPanel() {
+        if(glyphButton("Create Font",UiGlyph::Add,{133.f,25.f})) {
+            font_.reset(8,8);fontDirty_=true;
+            std::strncpy(fontFileName_,"CustomPixelFont",sizeof(fontFileName_)-1);
+            fontGlyphWindowOpen_=true;fontEditorVisible_=true;
+        }
+        ImGui::SameLine();
+        if(ImGui::SmallButton("Edit glyphs..."))fontGlyphWindowOpen_=true;
+        ImGui::Separator();
+        ImGui::TextDisabled("Current font: %s%s",fontName_,fontDirty_?" *":"");
+        ImGui::BeginChild("##GlyphList",ImVec2(0.f,std::max(70.f,ImGui::GetContentRegionAvail().y*.56f)),true);
+        const float spacing=ImGui::GetStyle().ItemSpacing.x;
+        const int count=std::max(1,(int)(ImGui::GetContentRegionAvail().x/(24.f+spacing)));
+        for(int ch=32;ch<127;++ch) {
+            ImGui::PushID(ch);
+            char label[8]={};label[0]=(char)ch;if(ch==32)std::strcpy(label,"Sp");
+            if(ImGui::Button(label,{23.f,23.f})) {selectedGlyph_=ch;fontGlyphWindowOpen_=true;}
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("Edit ASCII %d",ch);
+            if((ch-31)%count!=0)ImGui::SameLine(0.f,spacing);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        const int size[2]={font_.width,font_.height};
+        ImGui::Text("Character size: %d x %d",size[0],size[1]);
+        ImGui::Text("Advance: %d  Baseline: %d",font_.advance,font_.baseline);
+        if(ImGui::SmallButton("Save font"))saveFont();
+        ImGui::SameLine();if(ImGui::SmallButton("Open full editor"))fontGlyphWindowOpen_=true;
     }
 
     void mainPanels() {
         const auto sz=ImGui::GetIO().DisplaySize;
-        const float top=ImGui::GetFrameHeight()+4.f,bottom=26.f;
-        const float left=std::clamp(sz.x*.215f,235.f,330.f);
-        const float right=std::clamp(sz.x*.245f,270.f,380.f);
-        const float mid=std::max(100.f,sz.x-left-right);
-        const float contentH=std::max(150.f,sz.y-top-bottom);
-        const float hierarchyH=contentH*.24f,assetsH=contentH*.33f;
-        const float baseH=codeExpanded_?contentH*.62f:std::clamp(contentH*.29f,190.f,300.f);
-        const float sceneH=std::max(100.f,contentH-baseH);
-        const float dataW=mid*.65f;
+        const float menuBottom=ImGui::GetFrameHeight()+2.f;
+        const float toolbarH=39.f,top=menuBottom+toolbarH,bottom=25.f;
+        const float left=std::clamp(sz.x*.205f,230.f,330.f);
+        const float right=std::clamp(sz.x*.233f,265.f,380.f);
+        const float mid=std::max(180.f,sz.x-left-right);
+        const float contentH=std::max(300.f,sz.y-top-bottom);
+        const float hierarchyH=std::clamp(contentH*.275f,150.f,255.f);
+        const float assetsH=assetsExpanded_ ? std::clamp(contentH*.49f,190.f,450.f) : 62.f;
+        const float physH=std::max(85.f,contentH-hierarchyH-assetsH);
+        const float baseH=codeExpanded_ ? std::clamp(contentH*.62f,220.f,contentH-120.f) : std::clamp(contentH*.265f,170.f,280.f);
+        const float sceneH=std::max(90.f,contentH-baseH);
+        const float dataW=mid*.65f,fontW=mid*.35f;
+        const float paletteH=std::clamp(contentH*.34f,210.f,330.f);
         const auto flags=ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoSavedSettings;
-        ImGui::SetNextWindowPos({0,top});ImGui::SetNextWindowSize({left,hierarchyH});
+        ImGui::SetNextWindowPos({0.f,menuBottom});ImGui::SetNextWindowSize({sz.x,toolbarH});
+        ImGui::Begin("##SpriteForgeToolbar",nullptr,flags|ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoScrollbar);toolbar();ImGui::End();
+        ImGui::SetNextWindowPos({0.f,top});ImGui::SetNextWindowSize({left,hierarchyH});
         ImGui::Begin("Hierarchy",nullptr,flags);hierarchyPanel();ImGui::End();
-        ImGui::SetNextWindowPos({0,top+hierarchyH});ImGui::SetNextWindowSize({left,assetsH});
-        ImGui::Begin("Assets",nullptr,flags);assetBrowser();ImGui::End();
-        ImGui::SetNextWindowPos({0,top+hierarchyH+assetsH});
-        ImGui::SetNextWindowSize({left,contentH-hierarchyH-assetsH});
-        ImGui::Begin("Font Editor",nullptr,flags);fontPanel();ImGui::End();
+        ImGui::SetNextWindowPos({0.f,top+hierarchyH});ImGui::SetNextWindowSize({left,assetsH});
+        ImGui::Begin("##SpriteForgeAssets",nullptr,flags|ImGuiWindowFlags_NoTitleBar);assetsPanel();ImGui::End();
+        ImGui::SetNextWindowPos({0.f,top+hierarchyH+assetsH});ImGui::SetNextWindowSize({left,physH});
+        ImGui::Begin("##SpriteForgePhysics",nullptr,flags|ImGuiWindowFlags_NoTitleBar);physicsSidebar();ImGui::End();
         ImGui::SetNextWindowPos({left,top});ImGui::SetNextWindowSize({mid,sceneH});
         ImGui::Begin("Scene View",nullptr,flags|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
         sceneViewport();ImGui::End();
         ImGui::SetNextWindowPos({left,top+sceneH});ImGui::SetNextWindowSize({dataW,baseH});
-        ImGui::Begin("Array / World Data | Code / Build",nullptr,flags);
-        arrayDataPanel();ImGui::End();
-        ImGui::SetNextWindowPos({left+dataW,top+sceneH});ImGui::SetNextWindowSize({mid-dataW,baseH});
-        ImGui::Begin("Tile Palette / Array Tools",nullptr,flags);
-        tilePalettePanel();ImGui::End();
-        ImGui::SetNextWindowPos({left+mid,top});ImGui::SetNextWindowSize({right,contentH});
+        ImGui::Begin("Array / World Data",nullptr,flags);arrayDataPanel();ImGui::End();
+        ImGui::SetNextWindowPos({left+dataW,top+sceneH});ImGui::SetNextWindowSize({fontW,baseH});
+        ImGui::Begin("Font Editor",nullptr,flags);compactFontPanel();ImGui::End();
+        ImGui::SetNextWindowPos({left+mid,top});ImGui::SetNextWindowSize({right,contentH-paletteH});
         ImGui::Begin("Inspector",nullptr,flags);inspector();ImGui::End();
-        ImGui::SetNextWindowPos({0,sz.y-bottom});ImGui::SetNextWindowSize({sz.x,bottom});
-        ImGui::Begin("Status",nullptr,flags|ImGuiWindowFlags_NoTitleBar);
-        ImGui::TextUnformatted(status_.c_str());ImGui::End();
+        ImGui::SetNextWindowPos({left+mid,top+contentH-paletteH});ImGui::SetNextWindowSize({right,paletteH});
+        ImGui::Begin("Tile Palette / Array Tools",nullptr,flags);tilePalettePanel();ImGui::End();
+        ImGui::SetNextWindowPos({0.f,sz.y-bottom});ImGui::SetNextWindowSize({sz.x,bottom});
+        ImGui::Begin("Status",nullptr,flags|ImGuiWindowFlags_NoTitleBar);ImGui::TextUnformatted(status_.c_str());ImGui::End();
     }
 
     void ensureTilemapEnabled() {
@@ -1085,8 +1348,29 @@ private:
             ImGui::Checkbox("Paint mode", &tilePaintMode_);
             ImGui::Text("Tiles: %d", static_cast<int>(scene_.tilemap.tiles.size()));
             ImGui::Text("Array cells: %d x 3 layers", static_cast<int>(scene_.tilemap.cells.size()));
-            ImGui::SliderInt("Chunk size",&scene_.tilemap.chunkSize,8,256);
-            ImGui::TextDisabled("Visible-tile batching; disk chunk streaming not yet available.");
+            const char* storage="2D Array (flat vector)";
+            if(ImGui::BeginCombo("Storage",storage)) {
+                ImGui::Selectable("2D Array (flat vector)",true);
+                ImGui::TextDisabled("Other storage backends are not implemented.");
+                ImGui::EndCombo();
+            }
+            if(ImGui::BeginCombo("Render Mode","Batched Textures")) {
+                ImGui::Selectable("Batched Textures",true);
+                ImGui::TextDisabled("Atlas packing is not implemented.");
+                ImGui::EndCombo();
+            }
+            const char* chunkNames[]={"16 x 16","32 x 32","64 x 64","128 x 128","256 x 256"};
+            int chunkValues[]={16,32,64,128,256};int chosen=2;
+            for(int i=0;i<5;++i)if(scene_.tilemap.chunkSize==chunkValues[i])chosen=i;
+            if(ImGui::Combo("Chunk Size",&chosen,chunkNames,5))scene_.tilemap.chunkSize=chunkValues[chosen];
+            bool solid=true;
+            for(auto& definition:scene_.tilemap.tiles)if(definition.id!=0&& !definition.solid){solid=false;break;}
+            int collisions=solid?0:1;
+            const char* collisionNames[]={"Solid Blocks","Pass-through Blocks"};
+            if(ImGui::Combo("Collision",&collisions,collisionNames,2)){
+                for(auto& def:scene_.tilemap.tiles)if(def.id!=0)def.solid=collisions==0;
+            }
+            ImGui::TextDisabled("Chunks are logical regions, not streamed from disk.");
             if (selectedTileId_ != 0) {
                 if (const auto* def = selectedTileDefinition()) ImGui::Text("Selected tile: %d (%s)", def->id, def->name.c_str());
             } else {
@@ -1226,9 +1510,8 @@ private:
     }
 
     void assetBrowser() {
-        if (ImGui::Button("Import PNG / JPG...")) importImage();
-        ImGui::SameLine();
-        ImGui::TextDisabled("Drag sprites into the scene");
+        if (ImGui::SmallButton("Import image...")) importImage();
+        ImGui::SameLine();ImGui::TextDisabled("Drag into scene");
         ImGui::Separator();
         const auto all = assetsIn(projectDir_);
         if (all.empty()) { ImGui::TextDisabled("No images. Import one to start."); return; }
@@ -1253,7 +1536,8 @@ private:
                 ImGui::Button("Invalid", {64,64});
             }
             ImGui::TextWrapped("%s", path.filename().string().c_str());
-            if (i+1 < static_cast<int>(all.size()) && i % 2 == 0) ImGui::SameLine(0.f, 12.f);
+            const int perRow=assetsGridView_?3:1;
+            if (i+1 < static_cast<int>(all.size()) && (i+1)%perRow !=0) ImGui::SameLine(0.f,8.f);
             ImGui::PopID();
         }
         ImGui::EndDisabled();
@@ -1432,34 +1716,15 @@ private:
 
 
     void sceneViewport() {
-        if (ImGui::Button("Play / Compile")) requestBuild(AfterBuild::Play);
+        ImGui::TextDisabled("2D Scene  |  %.0f%% zoom  |  Pan: middle drag / Shift + left drag  |  Layer %d",100.f/zoom_,tileLayer_);
         ImGui::SameLine();
-        if (ImGui::Button("Stop Game")) stopGame();
-        ImGui::SameLine();
-        if (ImGui::Button("Center")) camera_ = {scene_.width/2.f,scene_.height/2.f};
-        ImGui::SameLine();
-        if (ImGui::Button("1:1")) zoom_ = 1.f;
-        ImGui::SameLine();
-        ImGui::Checkbox("Paint Tiles", &tilePaintMode_);
-        ImGui::SameLine(); ImGui::Checkbox("Grid", &grid_);
-        ImGui::SameLine(); ImGui::Checkbox("Colliders", &showColliders_);
-        ImGui::SameLine();
-        ImGui::TextDisabled("Zoom %.0f%% | Pan MMB / Shift+LMB | DT 1/%d | FPS cap %d",
-                            100.f/zoom_, scene_.physics.fixedHz, scene_.physics.maxRenderFps);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(160.f);
-        ImGui::InputTextWithHint("##exportname", "EXE name", exportName_, sizeof(exportName_));
-        ImGui::SameLine();
-        if (ImGui::Button("Export EXE")) exportGame();
+        if(ImGui::SmallButton("1:1"))zoom_=1.f;
         const ImVec2 available = ImGui::GetContentRegionAvail();
         const unsigned rw = static_cast<unsigned>(std::max(1.f, available.x));
         const unsigned rh = static_cast<unsigned>(std::max(1.f, available.y));
         if (rw < 2 || rh < 2) return;
         if (viewport_.getSize() != sf::Vector2u{rw,rh}) {
-            if (!viewport_.resize({rw,rh})) {
-                notify("Could not resize the scene render texture.");
-                return;
-            }
+            if (!viewport_.resize({rw,rh})) { notify("Could not resize scene render texture."); return; }
         }
         viewportW_ = static_cast<float>(rw);
         viewportH_ = static_cast<float>(rh);
@@ -1467,7 +1732,7 @@ private:
         viewport_.setView(view);
         const Scene& active = scene_;
         viewport_.clear(active.background);
-        drawScene(viewport_, active, projectDir_, textures_, selectedId_, grid_, zoom_);
+        drawScene(viewport_, active, projectDir_, textures_, selectedId_, grid_, zoom_, gridSizePreview_);
         if(showColliders_) {
             for(const auto& obj:active.objects) if(obj.physics.enabled) {
                 sf::RectangleShape collision(obj.physics.size);
